@@ -1,0 +1,738 @@
+from __future__ import annotations
+
+import pytest
+
+from coreouto._types import AgentConfig, Message, ToolCall, ToolResult
+from coreouto.agent import _DEFAULT_SYSTEM_PROMPT, Agent, MaxIterationsError
+from coreouto.hooks import (
+    AFTER_LLM_CALL,
+    AFTER_TOOL_CALL,
+    BEFORE_LLM_CALL,
+    BEFORE_TOOL_CALL,
+    ON_FINISH,
+    ON_ITERATION,
+    clear_hooks,
+    register_hook,
+)
+from coreouto.providers import clear_providers, register_provider
+from coreouto.tools import clear_tools, register_tool
+from tests.conftest import HookRecorder, MockLLMResponse, MockProvider
+
+
+@pytest.fixture(autouse=True)
+def _clean_state():
+    clear_tools()
+    clear_hooks()
+    clear_providers()
+    yield
+    clear_tools()
+    clear_hooks()
+    clear_providers()
+
+
+async def test_happy_path_single_iteration_finish():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=10))
+    response = await agent.call("hello")
+
+    assert response.content == "done"
+    assert response.iterations == 1
+    assert response.finish_called is True
+    assert len(response.messages) == 3
+    assert response.messages[0].role == "system"
+    assert response.messages[1].role == "user"
+    assert response.messages[1].content == "hello"
+    assert response.messages[2].role == "assistant"
+
+
+async def test_multi_iteration_with_tool_call():
+    side_effect: list[str] = []
+
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        side_effect.append(msg)
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}])
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert side_effect == ["hi"]
+    assert response.content == "done"
+    assert response.iterations == 2
+    assert response.finish_called is True
+
+
+async def test_multi_iteration_two_tools_in_one_response():
+    calls: list[tuple[str, str]] = []
+
+    @register_tool("tool_a")
+    def tool_a(x: str) -> str:
+        calls.append(("a", x))
+        return f"a-{x}"
+
+    @register_tool("tool_b")
+    def tool_b(y: str) -> str:
+        calls.append(("b", y))
+        return f"b-{y}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "tc1", "name": "tool_a", "arguments": {"x": "1"}},
+                {"id": "tc2", "name": "tool_b", "arguments": {"y": "2"}},
+            ]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["tool_a", "tool_b"]))
+    response = await agent.call("hello")
+
+    assert calls == [("a", "1"), ("b", "2")]
+    assert response.iterations == 2
+
+
+async def test_max_iterations_error():
+    provider = MockProvider()
+    for _ in range(3):
+        provider.queue(MockLLMResponse(content="thinking..."))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=2))
+    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
+        await agent.call("hello")
+
+
+async def test_system_prompt_injected_as_first_message():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", system_prompt="you are X"))
+    response = await agent.call("hello")
+
+    assert response.content == "done"
+    first_call = provider.calls[0]
+    messages = first_call["messages"]
+    assert messages[0].role == "system"
+    assert messages[0].content == "you are X"
+    assert messages[1].role == "user"
+    assert messages[1].content == "hello"
+
+
+async def test_hook_firing_order():
+    recorder = HookRecorder()
+    factory = recorder.make()
+
+    for event in [
+        BEFORE_LLM_CALL,
+        AFTER_LLM_CALL,
+        ON_ITERATION,
+        BEFORE_TOOL_CALL,
+        AFTER_TOOL_CALL,
+        ON_FINISH,
+    ]:
+        register_hook(event, factory(event))
+
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}])
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["echo"]))
+    await agent.call("hello")
+
+    events = [e[0] for e in recorder.events]
+    expected = [
+        BEFORE_LLM_CALL,
+        AFTER_LLM_CALL,
+        ON_ITERATION,
+        BEFORE_TOOL_CALL,
+        AFTER_TOOL_CALL,
+        BEFORE_LLM_CALL,
+        AFTER_LLM_CALL,
+        ON_ITERATION,
+        ON_FINISH,
+    ]
+    assert events == expected
+
+
+async def test_override_at_call_time():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="a"))
+    provider.queue(MockLLMResponse(content="b"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=5))
+    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
+        await agent.call(
+            "hello",
+            override=AgentConfig(name="ovr", model="m", provider="mock", max_iterations=2),
+        )
+
+
+async def test_tool_error_surfaces_as_is_error():
+    @register_tool("boom")
+    def boom() -> str:
+        raise RuntimeError("exploded")
+
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(tool_calls=[{"id": "tc1", "name": "boom", "arguments": {}}]))
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["boom"]))
+    await agent.call("hello")
+
+    _tc, result = provider.formatted_tool_results[0]
+    assert isinstance(result, ToolResult)
+    assert result.is_error is True
+    assert "RuntimeError: exploded" in result.content
+
+
+async def test_missing_tool_raises_keyerror():
+    register_provider("mock", MockProvider())
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["nonexistent"]))
+    with pytest.raises(KeyError, match=r"tool not registered: 'nonexistent'"):
+        await agent.call("hello")
+
+
+async def test_missing_provider_raises_keyerror():
+    agent = Agent(AgentConfig(name="test", model="m", provider="nonexistent"))
+    with pytest.raises(KeyError, match="provider not registered"):
+        await agent.call("hello")
+
+
+async def test_async_tool_handler():
+    @register_tool("async_echo")
+    async def async_echo(msg: str) -> str:
+        return f"async-{msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "async_echo", "arguments": {"msg": "hi"}}]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["async_echo"]))
+    await agent.call("hello")
+
+    _tc, result = provider.formatted_tool_results[0]
+    assert result.content == "async-hi"
+
+
+async def test_usage_tracking():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<finish>done</finish>",
+            prompt_tokens=10,
+            completion_tokens=5,
+        )
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert len(response.usage) == 1
+    assert response.usage[0].prompt_tokens == 10
+    assert response.usage[0].completion_tokens == 5
+    assert response.usage[0].total_tokens == 15
+
+
+async def test_usage_tracking_multiple_iterations():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "noop", "arguments": {}}],
+            prompt_tokens=5,
+            completion_tokens=3,
+        )
+    )
+    provider.queue(
+        MockLLMResponse(
+            content="<finish>done</finish>",
+            prompt_tokens=8,
+            completion_tokens=4,
+        )
+    )
+    register_provider("mock", provider)
+
+    @register_tool("noop")
+    def noop() -> str:
+        return "ok"
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["noop"]))
+    response = await agent.call("hello")
+
+    assert len(response.usage) == 2
+    assert response.usage[0].prompt_tokens == 5
+    assert response.usage[0].completion_tokens == 3
+    assert response.usage[1].prompt_tokens == 8
+    assert response.usage[1].completion_tokens == 4
+
+
+async def test_agent_store_config_and_provider_name():
+    cfg = AgentConfig(name="test", model="m", provider="mock")
+    agent = Agent(cfg)
+    assert agent.config is cfg
+    assert agent.provider_name == "mock"
+
+
+async def test_max_iterations_zero():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="nope"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=0))
+    with pytest.raises(MaxIterationsError, match=r"max_iterations \(0\) reached"):
+        await agent.call("hello")
+
+
+async def test_provider_config_forwarded_to_provider():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="mock",
+            provider_config={"temperature": 0.5, "max_tokens": 100},
+        )
+    )
+    await agent.call("hello")
+
+    assert provider.calls[0]["kwargs"] == {"temperature": 0.5, "max_tokens": 100}
+
+
+async def test_max_iterations_still_works_with_force_finish():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="a"))
+    provider.queue(MockLLMResponse(content="b"))
+    provider.queue(MockLLMResponse(content="c"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=2))
+    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
+        await agent.call("hello")
+
+
+async def test_max_tokens_translates_per_provider():
+    for pname, expected_key in (
+        ("openai", "max_tokens"),
+        ("openai-response", "max_output_tokens"),
+        ("anthropic", "max_tokens"),
+        ("google", "max_output_tokens"),
+    ):
+        provider = MockProvider()
+        provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+        register_provider(pname, provider)
+
+        agent = Agent(
+            AgentConfig(
+                name="test",
+                model="m",
+                provider=pname,
+                provider_config={"max_tokens": 100},
+            )
+        )
+        await agent.call("hello")
+
+        assert provider.calls[0]["kwargs"] == {expected_key: 100}
+        clear_providers()
+
+
+async def test_provider_passthrough_merges_with_normalized():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("openai", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="openai",
+            provider_config={"temperature": 0.5},
+            provider_passthrough={"top_logprobs": 5},
+        )
+    )
+    await agent.call("hello")
+
+    assert provider.calls[0]["kwargs"] == {"temperature": 0.5, "top_logprobs": 5}
+
+
+async def test_provider_passthrough_overrides_normalized_on_conflict():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("openai", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="openai",
+            provider_config={"max_tokens": 100},
+            provider_passthrough={"max_output_tokens": 200},
+        )
+    )
+    await agent.call("hello")
+
+    assert provider.calls[0]["kwargs"] == {"max_tokens": 100, "max_output_tokens": 200}
+
+
+async def test_unknown_provider_config_key_raises():
+    register_provider("openai", MockProvider())
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="openai",
+            provider_config={"response_format": {"type": "json_object"}},
+        )
+    )
+    with pytest.raises(ValueError, match=r"unknown provider_config key 'response_format'"):
+        await agent.call("hello")
+
+
+async def test_reminder_injected_when_no_finish_tag():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="just text"))
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "done"
+    second_call = provider.calls[1]
+    messages = second_call["messages"]
+    user_messages = [m for m in messages if m.role == "user"]
+    assert len(user_messages) == 2
+    assert "<finish>" in user_messages[-1].content
+
+
+async def test_history_prepended_to_messages():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    history = [
+        Message(role="user", content="earlier question"),
+        Message(role="assistant", content="earlier answer"),
+    ]
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("new question", history=history)
+
+    messages = provider.calls[0]["messages"]
+    assert len(messages) == 4
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
+    assert messages[1].content == "earlier question"
+    assert messages[2].role == "assistant"
+    assert messages[2].content == "earlier answer"
+    assert messages[3].role == "user"
+    assert messages[3].content == "new question"
+
+
+async def test_history_none_default_preserves_existing_behavior():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("hello")
+
+    messages = provider.calls[0]["messages"]
+    assert len(messages) == 2
+    assert messages[0].role == "system"
+    assert messages[1].role == "user"
+    assert messages[1].content == "hello"
+
+
+async def test_history_empty_list_equals_none():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("hello", history=[])
+
+    messages = provider.calls[0]["messages"]
+    assert len(messages) == 2
+    assert messages[0].role == "system"
+    assert messages[1].content == "hello"
+
+
+async def test_history_with_system_prompt_prepends_cfg_first():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    history = [
+        Message(role="user", content="earlier"),
+        Message(role="assistant", content="answer"),
+    ]
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", system_prompt="you are X"))
+    await agent.call("new", history=history)
+
+    messages = provider.calls[0]["messages"]
+    assert len(messages) == 4
+    assert messages[0].role == "system"
+    assert messages[0].content == "you are X"
+    assert messages[1].role == "user"
+    assert messages[1].content == "earlier"
+    assert messages[2].role == "assistant"
+    assert messages[2].content == "answer"
+    assert messages[3].role == "user"
+    assert messages[3].content == "new"
+
+
+async def test_history_can_be_fabricated():
+    provider = MockProvider()
+    captured_messages: list = []
+
+    original_create = provider.create
+
+    async def capturing_create(messages, **kwargs):
+        captured_messages.append(list(messages))
+        return await original_create(messages, **kwargs)
+
+    provider.create = capturing_create
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    fake_history = [
+        Message(role="user", content="fabricated question 1"),
+        Message(role="assistant", content="fabricated answer 1"),
+        Message(role="user", content="fabricated question 2"),
+        Message(role="assistant", content="fabricated answer 2"),
+    ]
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("real question", history=fake_history)
+
+    sent = captured_messages[0]
+    assert len(sent) == 6
+    assert [m.content for m in sent] == [
+        _DEFAULT_SYSTEM_PROMPT,
+        "fabricated question 1",
+        "fabricated answer 1",
+        "fabricated question 2",
+        "fabricated answer 2",
+        "real question",
+    ]
+
+
+async def test_history_preserves_assistant_tool_calls():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    history = [
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[
+                ToolCall(id="hist_tc1", name="search", arguments={"q": "x"}),
+            ],
+        ),
+        Message(role="tool", content="search result", tool_call_id="hist_tc1", name="search"),
+    ]
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("continue", history=history)
+
+    messages = provider.calls[0]["messages"]
+    assert messages[0].role == "system"
+    assert messages[1].role == "assistant"
+    assert messages[1].tool_calls is not None
+    assert messages[1].tool_calls[0].name == "search"
+    assert messages[2].role == "tool"
+    assert messages[2].tool_call_id == "hist_tc1"
+
+
+def test_call_sync_passes_history_through():
+    from coreouto.sync import call_sync
+
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    history = [Message(role="user", content="prev"), Message(role="assistant", content="ans")]
+    response = call_sync(agent, "new", history=history)
+    assert response.content == "ok"
+    sent = provider.calls[0]["messages"]
+    assert [m.content for m in sent] == [_DEFAULT_SYSTEM_PROMPT, "prev", "ans", "new"]
+
+
+async def test_history_works_with_override():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", system_prompt="default"))
+    history = [Message(role="user", content="q1"), Message(role="assistant", content="a1")]
+    override = AgentConfig(
+        name="ovr",
+        model="m",
+        provider="mock",
+        system_prompt="override prompt",
+    )
+    await agent.call("q2", history=history, override=override)
+
+    messages = provider.calls[0]["messages"]
+    assert messages[0].role == "system"
+    assert messages[0].content == "override prompt"
+    assert messages[1].content == "q1"
+    assert messages[2].content == "a1"
+    assert messages[3].content == "q2"
+
+
+async def test_inject_user_message_basic():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(content="thinking"),
+        MockLLMResponse(content="<finish>ok</finish>"),
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    agent.inject_user_message("injected mid-loop")
+    response = await agent.call("initial")
+
+    sent = provider.calls[1]["messages"]
+    contents = [m.content for m in sent if m.role == "user"]
+    assert "initial" in contents
+    assert "injected mid-loop" in contents
+    assert response.content == "ok"
+
+
+async def test_inject_user_message_fires_hook():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(content="thinking"),
+        MockLLMResponse(content="<finish>ok</finish>"),
+    )
+    register_provider("mock", provider)
+
+    injection_events: list[Message] = []
+
+    def capture(message, **_):
+        injection_events.append(message)
+
+    register_hook("on_user_injection", capture)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    agent.inject_user_message("hi from outside")
+    await agent.call("hi from caller")
+
+    assert len(injection_events) == 1
+    assert injection_events[0].role == "user"
+    assert injection_events[0].content == "hi from outside"
+
+
+async def test_inject_multiple_messages_all_drained_in_one_iteration():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(content="thinking"),
+        MockLLMResponse(content="<finish>ok</finish>"),
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    agent.inject_user_message("first")
+    agent.inject_user_message("second")
+    agent.inject_user_message("third")
+    await agent.call("initial")
+
+    sent = provider.calls[1]["messages"]
+    user_contents = [m.content for m in sent if m.role == "user"]
+    for expected in ["initial", "first", "second", "third"]:
+        assert expected in user_contents, f"missing {expected!r} in {user_contents}"
+
+
+async def test_inject_from_concurrent_task():
+    import asyncio
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(content="thinking"),
+        MockLLMResponse(content="<finish>ok</finish>"),
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+
+    async def inject_after_delay():
+        await asyncio.sleep(0)
+        agent.inject_user_message("from another task")
+
+    task = asyncio.create_task(inject_after_delay())
+    _ = task
+    response = await agent.call("initial")
+
+    sent = provider.calls[1]["messages"]
+    user_contents = [m.content for m in sent if m.role == "user"]
+    for expected in ["initial", "from another task"]:
+        assert expected in user_contents, f"missing {expected!r} in {user_contents}"
+    assert response.content == "ok"
+
+
+async def test_no_injection_no_change():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("only message")
+
+    sent = provider.calls[0]["messages"]
+    assert len(sent) == 2
+    assert sent[0].role == "system"
+    assert sent[1].content == "only message"
+
+
+async def test_on_finish_hook_receives_extracted_content():
+    received = []
+
+    def hook(**kwargs):
+        received.append(kwargs)
+
+    register_hook(ON_FINISH, hook)
+
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>my answer</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "my answer"
+    assert len(received) == 1
+    assert received[0]["content"] == "my answer"
+    assert received[0]["raw_content"] == "<finish>my answer</finish>"
+    assert received[0]["iterations"] == 1
+    assert "messages" in received[0]

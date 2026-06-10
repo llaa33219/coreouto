@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
+
+from coreouto._types import LLMResponse, Message, ToolCall, ToolResult
+from coreouto.providers.base import Provider
+from coreouto.tools import Tool
+
+# Fake SDK objects so tests run without `anthropic` installed.
+
+
+@dataclass
+class FakeContentBlock:
+    type: str
+    text: str | None = None
+    id: str | None = None
+    name: str | None = None
+    input: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FakeUsage:
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass
+class FakeMessage:
+    content: list[FakeContentBlock]
+    usage: FakeUsage
+
+
+@dataclass
+class FakeMessages:
+    _response: FakeMessage | None = None
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    async def create(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        system: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        max_tokens: int = 1024,
+        **kwargs: Any,
+    ) -> FakeMessage:
+        self.calls.append(
+            {
+                "model": model,
+                "messages": messages,
+                "system": system,
+                "tools": tools,
+                "max_tokens": max_tokens,
+                "kwargs": kwargs,
+            }
+        )
+        if self._response is None:
+            raise AssertionError("FakeMessages.create called without a queued response")
+        return self._response
+
+    def queue(self, response: FakeMessage) -> None:
+        self._response = response
+
+
+@dataclass
+class FakeAsyncAnthropic:
+    messages: FakeMessages = field(default_factory=FakeMessages)
+
+
+@pytest.fixture
+def fake_client():
+    return FakeAsyncAnthropic()
+
+
+@pytest.fixture
+def provider(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    return AnthropicProvider(client=fake_client)
+
+
+@pytest.mark.asyncio
+async def test_create_simple_user_message(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="Hello back")],
+            usage=FakeUsage(input_tokens=5, output_tokens=3),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="Hello")],
+        model="claude-3-haiku-20240307",
+    )
+    assert isinstance(result, LLMResponse)
+    assert result.content == "Hello back"
+    assert result.tool_calls == []
+    assert result.usage.prompt_tokens == 5
+    assert result.usage.completion_tokens == 3
+    assert result.usage.total_tokens == 8
+    assert result.raw is not None
+
+    call = fake_client.messages.calls[0]
+    assert call["model"] == "claude-3-haiku-20240307"
+    assert call["messages"] == [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}]
+    assert call["system"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_with_tool_result(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="Done")],
+            usage=FakeUsage(input_tokens=10, output_tokens=2),
+        )
+    )
+    result = await provider.create(
+        messages=[
+            Message(role="user", content="Call a tool"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[ToolCall(id="tu_1", name="my_tool", arguments={"x": 1})],
+            ),
+            Message(role="tool", content="result1", tool_call_id="tu_1", name="my_tool"),
+        ],
+        model="claude-3-haiku-20240307",
+    )
+    assert result.content == "Done"
+
+    call = fake_client.messages.calls[0]
+    assert call["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "Call a tool"}]},
+        {
+            "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tu_1", "name": "my_tool", "input": {"x": 1}}],
+        },
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "result1"}],
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_with_assistant_tool_calls(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[
+                FakeContentBlock(type="text", text="Let me calculate"),
+                FakeContentBlock(
+                    type="tool_use",
+                    id="tu_2",
+                    name="calc",
+                    input={"a": 2, "b": 3},
+                ),
+            ],
+            usage=FakeUsage(input_tokens=8, output_tokens=6),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="Add 2+3")],
+        model="claude-3-haiku-20240307",
+    )
+    assert result.content == "Let me calculate"
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].id == "tu_2"
+    assert result.tool_calls[0].name == "calc"
+    assert result.tool_calls[0].arguments == {"a": 2, "b": 3}
+
+
+@pytest.mark.asyncio
+async def test_create_with_system_prompt_arg(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(
+        messages=[Message(role="user", content="hi")],
+        model="claude-3-haiku-20240307",
+        system_prompt="You are a test bot",
+    )
+    call = fake_client.messages.calls[0]
+    assert call["system"] == "You are a test bot"
+
+
+@pytest.mark.asyncio
+async def test_create_with_system_role_messages(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(
+        messages=[
+            Message(role="system", content="Sys1"),
+            Message(role="system", content="Sys2"),
+            Message(role="user", content="hi"),
+        ],
+        model="claude-3-haiku-20240307",
+    )
+    call = fake_client.messages.calls[0]
+    assert call["system"] == "Sys1\nSys2"
+    assert all(m["role"] != "system" for m in call["messages"])
+
+
+@pytest.mark.asyncio
+async def test_create_with_tools(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="tool response")],
+            usage=FakeUsage(input_tokens=2, output_tokens=2),
+        )
+    )
+    tool = Tool(
+        name="search",
+        description="Search the web",
+        parameters={"type": "object", "properties": {"q": {"type": "string"}}},
+        handler=lambda q: q,
+    )
+    await provider.create(
+        messages=[Message(role="user", content="Search for cats")],
+        model="claude-3-haiku-20240307",
+        tools=[tool],
+    )
+    call = fake_client.messages.calls[0]
+    assert call["tools"] == [
+        {
+            "name": "search",
+            "description": "Search the web",
+            "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_mixed_response(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[
+                FakeContentBlock(type="text", text="Mixed"),
+                FakeContentBlock(type="tool_use", id="tu_3", name="foo", input={"bar": 1}),
+            ],
+            usage=FakeUsage(input_tokens=4, output_tokens=5),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="Go")],
+        model="claude-3-haiku-20240307",
+    )
+    assert result.content == "Mixed"
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0] == ToolCall(id="tu_3", name="foo", arguments={"bar": 1})
+
+
+def test_format_assistant_message_text_only(provider):
+    response = LLMResponse(content="Just text", usage=None)
+    msg = provider.format_assistant_message(response)
+    assert msg.role == "assistant"
+    assert msg.content == "Just text"
+    assert msg.tool_calls is None
+
+
+def test_format_assistant_message_with_tool_calls(provider):
+    response = LLMResponse(
+        content="Using tool",
+        tool_calls=[ToolCall(id="tc1", name="t1", arguments={"a": 1})],
+    )
+    msg = provider.format_assistant_message(response)
+    assert msg.role == "assistant"
+    assert msg.content == "Using tool"
+    assert msg.tool_calls == [ToolCall(id="tc1", name="t1", arguments={"a": 1})]
+
+
+def test_format_tool_result(provider):
+    tc = ToolCall(id="tc1", name="t1", arguments={})
+    tr = ToolResult(tool_call_id="tc1", content="res", is_error=False)
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.role == "tool"
+    assert msg.content == "res"
+    assert msg.tool_call_id == "tc1"
+    assert msg.name == "t1"
+
+
+@dataclass
+class FakeAsyncAnthropicWithRecording:
+    recorded_args: dict[str, Any] = field(default_factory=dict)
+    messages: FakeMessages = field(default_factory=FakeMessages)
+
+    def __init__(
+        self, *, api_key: str | None = None, base_url: str | None = None, **kwargs: Any
+    ) -> None:
+        self.recorded_args = {"api_key": api_key, "base_url": base_url, **kwargs}
+        self.messages = FakeMessages()
+
+
+def test_provider_satisfies_protocol(provider):
+    assert isinstance(provider, Provider)
+
+
+def test_anthropic_provider_accepts_base_url_construction(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(
+        api_key="test", base_url="https://proxy.example.com", client=fake_client
+    )
+    assert provider._client is fake_client
+
+
+def test_anthropic_provider_passes_base_url_to_client(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    monkeypatch.setattr(
+        "coreouto.providers.anthropic._import_anthropic",
+        lambda: FakeAsyncAnthropicWithRecording,
+    )
+    provider = AnthropicProvider(api_key="test", base_url="https://proxy.example.com")
+    assert provider._client.recorded_args["base_url"] == "https://proxy.example.com"
+
+
+def test_anthropic_provider_works_without_base_url(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    monkeypatch.setattr(
+        "coreouto.providers.anthropic._import_anthropic",
+        lambda: FakeAsyncAnthropicWithRecording,
+    )
+    provider = AnthropicProvider(api_key="test")
+    assert provider._client.recorded_args["base_url"] is None
+
+
+def test_anthropic_register_function_accepts_base_url(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers import clear_providers, get_provider
+    from coreouto.providers.anthropic import register
+
+    monkeypatch.setattr(
+        "coreouto.providers.anthropic._import_anthropic",
+        lambda: FakeAsyncAnthropicWithRecording,
+    )
+    clear_providers()
+    register(api_key="x", base_url="https://proxy.example.com", name="anthropic-proxy")
+    provider = get_provider("anthropic-proxy")
+    assert provider is not None
+    assert provider._client.recorded_args["base_url"] == "https://proxy.example.com"
+    clear_providers()
+
+
+@pytest.mark.asyncio
+async def test_create_groups_consecutive_tool_messages(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(
+        messages=[
+            Message(role="user", content="call tools"),
+            Message(role="tool", content="r1", tool_call_id="tc1", name="t1"),
+            Message(role="tool", content="r2", tool_call_id="tc2", name="t2"),
+            Message(role="user", content="next"),
+        ],
+        model="claude-3-haiku-20240307",
+    )
+    call = fake_client.messages.calls[0]
+    assert call["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "call tools"}]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tc1", "content": "r1"},
+                {"type": "tool_result", "tool_use_id": "tc2", "content": "r2"},
+            ],
+        },
+        {"role": "user", "content": [{"type": "text", "text": "next"}]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_prefers_system_prompt_arg_over_messages(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(
+        messages=[
+            Message(role="system", content="from messages"),
+            Message(role="user", content="hi"),
+        ],
+        model="claude-3-haiku-20240307",
+        system_prompt="from arg",
+    )
+    call = fake_client.messages.calls[0]
+    assert call["system"] == "from arg"
