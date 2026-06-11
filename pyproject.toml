@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "coreouto"
-version = "0.1.0"
+version = "0.1.1"
 description = "A minimal, extensible agent library for Python. Five philosophies: minimalism, extensibility, explicitness, fragmentation, conciseness."
 readme = "README.md"
 license = "Apache-2.0"
