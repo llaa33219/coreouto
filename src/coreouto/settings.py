@@ -60,6 +60,7 @@ _PROVIDER_MAP: dict[str, dict[str, str | None]] = {
     },
     SETTING_REASONING_EFFORT: {
         "openai-response": None,
+        "anthropic": None,
     },
 }
 
@@ -78,8 +79,13 @@ def normalize_provider_config(provider_name: str, config: dict[str, Any]) -> dic
       message naming the key, the provider, and the supported providers (if any).
     - Non-canonical keys → raise `ValueError` listing the unknown key and the
       canonical 8 (suggesting the user move it to `provider_passthrough`).
-    - For `reasoning_effort` with `openai-response`, the value is wrapped as
-      `{"reasoning": {"effort": value}}` per the OpenAI Responses API.
+    - For `reasoning_effort`:
+        - `openai-response` wraps the value as `{"reasoning": {"effort": value}}`.
+        - `anthropic` emits `{"thinking": {"type": "adaptive"}, "output_config":
+          {"effort": value}}` so the model controls *when* to think (adaptive) and
+          the user controls *how hard* (effort). Supported values:
+          `none|low|medium|high|xhigh|max`. `none`/`minimal` disables thinking
+          and drops the related kwargs.
     """
     known_providers = {"openai", "openai-response", "anthropic", "google"}
     is_known = provider_name in known_providers
@@ -111,9 +117,32 @@ def normalize_provider_config(provider_name: str, config: dict[str, Any]) -> dic
             )
 
         provider_key = mapping[provider_name]
-        if key == SETTING_REASONING_EFFORT and provider_name == "openai-response":
-            result["reasoning"] = {"effort": value}
+        if key == SETTING_REASONING_EFFORT:
+            _apply_reasoning_effort(result, provider_name, value)
         else:
             result[provider_key] = value
 
     return result
+
+
+_ANTHROPIC_REASONING_OFF = {"none", "minimal"}
+_ANTHROPIC_REASONING_LEVELS = {"low", "medium", "high", "xhigh", "max"}
+
+
+def _apply_reasoning_effort(result: dict[str, Any], provider_name: str, value: Any) -> None:
+    if provider_name == "openai-response":
+        result["reasoning"] = {"effort": value}
+        return
+
+    if provider_name == "anthropic":
+        if value in _ANTHROPIC_REASONING_OFF:
+            return
+        if value not in _ANTHROPIC_REASONING_LEVELS:
+            allowed = "|".join(sorted(_ANTHROPIC_REASONING_OFF | _ANTHROPIC_REASONING_LEVELS))
+            raise ValueError(
+                f"invalid reasoning_effort '{value}' for provider 'anthropic'. "
+                f"Allowed values: {allowed}"
+            )
+        result["thinking"] = {"type": "adaptive"}
+        result["output_config"] = {"effort": value}
+        return

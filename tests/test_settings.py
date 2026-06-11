@@ -82,8 +82,52 @@ def test_reasoning_effort_wraps_for_openai_response():
     assert result == {"reasoning": {"effort": "medium"}}
 
 
+def test_reasoning_effort_wraps_for_anthropic_adaptive_thinking():
+    result = normalize_provider_config("anthropic", {"reasoning_effort": "high"})
+    assert result == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "high"},
+    }
+
+
+def test_reasoning_effort_anthropic_accepts_all_effort_levels():
+    for level in ("low", "medium", "high", "xhigh", "max"):
+        result = normalize_provider_config("anthropic", {"reasoning_effort": level})
+        assert result == {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": level},
+        }
+
+
+def test_reasoning_effort_anthropic_none_or_minimal_disables_thinking():
+    for off_value in ("none", "minimal"):
+        result = normalize_provider_config("anthropic", {"reasoning_effort": off_value})
+        assert result == {}
+
+
+def test_reasoning_effort_anthropic_invalid_value_raises():
+    for bad in ("lowish", "default", "all", ""):
+        with pytest.raises(
+            ValueError, match=r"invalid reasoning_effort '[^']*' for provider 'anthropic'"
+        ):
+            normalize_provider_config("anthropic", {"reasoning_effort": bad})
+
+
+def test_reasoning_effort_anthropic_does_not_drop_other_settings():
+    result = normalize_provider_config(
+        "anthropic",
+        {"reasoning_effort": "medium", "temperature": 0.2, "max_tokens": 2048},
+    )
+    assert result == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+        "temperature": 0.2,
+        "max_tokens": 2048,
+    }
+
+
 def test_reasoning_effort_unsupported_for_other_providers_raises():
-    for provider in ("openai", "anthropic", "google"):
+    for provider in ("openai", "google"):
         with pytest.raises(
             ValueError,
             match=rf"setting 'reasoning_effort' is not supported by provider '{provider}'",

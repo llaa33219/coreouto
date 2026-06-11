@@ -400,3 +400,24 @@ async def test_create_prefers_system_prompt_arg_over_messages(provider, fake_cli
     )
     call = fake_client.messages.calls[0]
     assert call["system"] == "from arg"
+
+
+@pytest.mark.asyncio
+async def test_create_forwards_thinking_and_output_config(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(
+        messages=[Message(role="user", content="hi")],
+        model="claude-sonnet-4-6",
+        thinking={"type": "adaptive"},
+        output_config={"effort": "medium"},
+    )
+    call = fake_client.messages.calls[0]
+    assert call["kwargs"] == {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": "medium"},
+    }

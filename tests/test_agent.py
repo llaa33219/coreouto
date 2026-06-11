@@ -366,6 +366,59 @@ async def test_max_tokens_translates_per_provider():
         clear_providers()
 
 
+async def test_reasoning_effort_forwards_per_provider():
+    cases = [
+        (
+            "openai-response",
+            {"reasoning_effort": "medium"},
+            {"reasoning": {"effort": "medium"}},
+        ),
+        (
+            "anthropic",
+            {"reasoning_effort": "high"},
+            {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "high"},
+            },
+        ),
+    ]
+    for pname, provider_config, expected_kwargs in cases:
+        provider = MockProvider()
+        provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+        register_provider(pname, provider)
+
+        agent = Agent(
+            AgentConfig(
+                name="test",
+                model="m",
+                provider=pname,
+                provider_config=provider_config,
+            )
+        )
+        await agent.call("hello")
+
+        assert provider.calls[0]["kwargs"] == expected_kwargs, pname
+        clear_providers()
+
+
+async def test_reasoning_effort_anthropic_none_drops_kwarg():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="anthropic",
+            provider_config={"reasoning_effort": "none"},
+        )
+    )
+    await agent.call("hello")
+
+    assert provider.calls[0]["kwargs"] == {}
+
+
 async def test_provider_passthrough_merges_with_normalized():
     provider = MockProvider()
     provider.queue(MockLLMResponse(content="<finish>done</finish>"))

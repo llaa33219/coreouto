@@ -46,6 +46,21 @@ co.register_agent_preset(
 
 Recommended models: `claude-opus-4-8` (flagship, 1M context), `claude-sonnet-4-6` (best speed/intelligence), `claude-haiku-4-5` (fast/cheap).
 
+**Reasoning effort** (adaptive thinking + effort parameter):
+
+```python
+co.register_agent_preset(
+    "deep-thinker",
+    model="claude-sonnet-4-6",
+    provider="anthropic",
+    provider_config={"reasoning_effort": "high"},
+)
+```
+
+`reasoning_effort` accepts `none|low|medium|high|xhigh|max`. Setting `none` (or the OpenAI-style alias `minimal`) drops the thinking kwargs entirely. Other values emit `thinking={"type": "adaptive"}` plus `output_config={"effort": value}` — the model decides *when* to think per turn, and you control *how hard*. `xhigh` and `max` are only available on Opus 4.6+ / Sonnet 4.6+ / Fable 5 / Mythos 5. For older models, use `provider_passthrough={"thinking": {"type": "enabled", "budget_tokens": N}}` to set a manual token budget.
+
+> **Note**: On Claude Opus 4.7+ and Claude Fable 5 / Mythos 5, sampling parameters (`temperature`, `top_p`, `top_k`) are rejected by the API. coreouto forwards whatever you set in `provider_config` as-is — pass `None` (or omit them) for those models.
+
 Install: `pip install coreouto[anthropic]`
 
 ### Google Generative AI
@@ -79,7 +94,7 @@ co.register_agent_preset(
 )
 ```
 
-`reasoning_effort` accepts `none|minimal|low|medium|high|xhigh`.
+`reasoning_effort` accepts `none|minimal|low|medium|high|xhigh|max` (max is Anthropic-only).
 
 Install: `pip install coreouto[openai]`
 
@@ -323,7 +338,7 @@ The same `provider_config` works across all four built-in providers.
 | `stop` | `stop` | — (not supported) | `stop_sequences` | `stop_sequences` |
 | `seed` | `seed` | — | — | — |
 | `metadata` | — | — | `metadata` | — |
-| `reasoning_effort` | — | `{"reasoning": {"effort": value}}` | — | — |
+| `reasoning_effort` | — | `{"reasoning": {"effort": value}}` | `{"thinking": {"type": "adaptive"}, "output_config": {"effort": value}}` | — |
 
 - Standard keys whose value is `None` are dropped before sending to the SDK.
 - Standard keys not supported by the chosen provider raise `ValueError` with a helpful message.
