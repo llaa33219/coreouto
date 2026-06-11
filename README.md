@@ -57,4 +57,4 @@ See [`docs/`](./docs/) for the full documentation set:
 
 ## License
 
-MIT
+Apache 2.0 — see [LICENSE](./LICENSE).
