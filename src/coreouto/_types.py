@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -13,12 +13,133 @@ class ToolCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class TextBlock(BaseModel):
+    """A plain text content block."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ImageBlock(BaseModel):
+    """An image content block.
+
+    Exactly one of `data` (raw bytes) or `url` must be set. `mime_type` is
+    required when `data` is set; the URL form may omit it.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["image"] = "image"
+    data: bytes | None = None
+    url: str | None = None
+    mime_type: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> ImageBlock:
+        if (self.data is None) == (self.url is None):
+            raise ValueError("ImageBlock requires exactly one of 'data' or 'url'")
+        if self.data is not None and self.mime_type is None:
+            raise ValueError("ImageBlock requires 'mime_type' when 'data' is set")
+        return self
+
+
+class DocumentBlock(BaseModel):
+    """A document content block (PDF, text, etc.).
+
+    Exactly one of `data` (raw bytes) or `url` must be set. `mime_type` is
+    required when `data` is set.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["document"] = "document"
+    data: bytes | None = None
+    url: str | None = None
+    mime_type: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> DocumentBlock:
+        if (self.data is None) == (self.url is None):
+            raise ValueError("DocumentBlock requires exactly one of 'data' or 'url'")
+        if self.data is not None and self.mime_type is None:
+            raise ValueError("DocumentBlock requires 'mime_type' when 'data' is set")
+        return self
+
+
+class VideoBlock(BaseModel):
+    """A video content block."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["video"] = "video"
+    data: bytes | None = None
+    url: str | None = None
+    mime_type: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> VideoBlock:
+        if (self.data is None) == (self.url is None):
+            raise ValueError("VideoBlock requires exactly one of 'data' or 'url'")
+        if self.data is not None and self.mime_type is None:
+            raise ValueError("VideoBlock requires 'mime_type' when 'data' is set")
+        return self
+
+
+class AudioBlock(BaseModel):
+    """An audio content block."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    type: Literal["audio"] = "audio"
+    data: bytes | None = None
+    url: str | None = None
+    mime_type: str | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self) -> AudioBlock:
+        if (self.data is None) == (self.url is None):
+            raise ValueError("AudioBlock requires exactly one of 'data' or 'url'")
+        if self.data is not None and self.mime_type is None:
+            raise ValueError("AudioBlock requires 'mime_type' when 'data' is set")
+        return self
+
+
+ContentBlock = Annotated[
+    TextBlock | ImageBlock | DocumentBlock | VideoBlock | AudioBlock,
+    Field(discriminator="type"),
+]
+
+
 class ToolResult(BaseModel):
+    """The result of a tool invocation, returned by tool handlers.
+
+    Provide either `content` (plain text) or `blocks` (multimodal), not both.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     tool_call_id: str
-    content: str
+    content: str | None = None
+    blocks: list[ContentBlock] | None = None
     is_error: bool = False
+
+    @model_validator(mode="after")
+    def _exactly_one_form(self) -> ToolResult:
+        if self.content is not None and self.blocks is not None:
+            raise ValueError("ToolResult accepts 'content' or 'blocks', not both")
+        if self.content is None and self.blocks is None:
+            raise ValueError("ToolResult requires 'content' or 'blocks'")
+        return self
+
+    def flatten_text(self) -> str:
+        """Concatenate all text content from `content`/`blocks` (best-effort)."""
+        if self.content is not None:
+            return self.content
+        if self.blocks is not None:
+            return "".join(block.text for block in self.blocks if isinstance(block, TextBlock))
+        return ""
 
 
 class Usage(BaseModel):
@@ -52,7 +173,7 @@ class Message(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     role: Literal["system", "user", "assistant", "tool"]
-    content: str
+    content: str | list[ContentBlock]
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None

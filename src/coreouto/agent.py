@@ -5,7 +5,18 @@ import inspect
 import re
 from typing import Any
 
-from coreouto._types import AgentConfig, Message, Response, ToolResult, Usage
+from coreouto._types import (
+    AgentConfig,
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    Message,
+    Response,
+    TextBlock,
+    ToolResult,
+    Usage,
+    VideoBlock,
+)
 from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
@@ -22,11 +33,33 @@ from coreouto.tools import get_tool
 
 _FINISH_RE = re.compile(r"<finish>(.*?)</finish>", re.DOTALL)
 _FINISH_REMINDER = (
-    "Your previous response did not contain a <finish> tag. "
-    "You MUST wrap your final user-facing answer in <finish>...</finish> tags. "
-    "Anything outside the tags is discarded. "
-    "Example: <finish>Your answer here.</finish>"
+    "Reminder: wrap your final answer in <finish>...</finish> tags so I can return it."
 )
+_CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
+
+
+def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
+    """Wrap a tool handler's return value into a ToolResult.
+
+    - A ToolResult is passed through (caller is responsible for the tool_call_id).
+    - A `str` becomes a text-only ToolResult.
+    - `list[ContentBlock]` becomes a multimodal ToolResult.
+    - Anything else is stringified.
+    """
+    if isinstance(raw_result, ToolResult):
+        return raw_result.model_copy(update={"tool_call_id": tool_call_id})
+    if isinstance(raw_result, str):
+        return ToolResult(tool_call_id=tool_call_id, content=raw_result, is_error=False)
+    if isinstance(raw_result, list) and all(
+        isinstance(item, _CONTENT_BLOCK_TYPES) for item in raw_result
+    ):
+        return ToolResult(tool_call_id=tool_call_id, blocks=raw_result, is_error=False)
+    return ToolResult(tool_call_id=tool_call_id, content=str(raw_result), is_error=False)
+
+
+_CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
+
+
 _DEFAULT_SYSTEM_PROMPT = (
     "You are an agent. Use tools to gather information, then return your final answer to the user.\n\n"
     "CRITICAL: When you are done, your final user-facing answer MUST be wrapped in <finish>...</finish> tags. "
@@ -190,12 +223,7 @@ class Agent:
                         raw_result = tool.handler(**tool_call.arguments)
                         if inspect.iscoroutine(raw_result):
                             raw_result = await raw_result
-                        result_content = str(raw_result)
-                        result = ToolResult(
-                            tool_call_id=tool_call.id,
-                            content=result_content,
-                            is_error=False,
-                        )
+                        result = _coerce_tool_result(tool_call.id, raw_result)
                     except Exception as exc:
                         result = ToolResult(
                             tool_call_id=tool_call.id,

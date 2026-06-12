@@ -3,33 +3,68 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult, Usage
+from coreouto._types import (
+    LLMResponse,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    Usage,
+)
 from coreouto.providers import register_provider
 from coreouto.tools import Tool
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
 except ImportError as exc:
     raise ImportError(
-        "The google-generativeai package is required. Install it with: pip install coreouto[google]"
+        "The google-genai package is required. Install it with: pip install coreouto[google]"
     ) from exc
+
+
+def _is_text_block(block: Any) -> bool:
+    return isinstance(block, TextBlock)
+
+
+def _text_blocks(blocks: list[Any]) -> list[TextBlock]:
+    return [b for b in blocks if _is_text_block(b)]
+
+
+def _build_function_response_part(block: Any) -> Any:
+    mime_type = getattr(block, "mime_type", None)
+    data = getattr(block, "data", None)
+    url = getattr(block, "url", None)
+    if data is not None:
+        if mime_type is None:
+            raise ValueError(f"{type(block).__name__} requires 'mime_type' when 'data' is set")
+        return types.FunctionResponsePart(
+            inline_data=types.FunctionResponseBlob(mime_type=mime_type, data=data)
+        )
+    if url is not None:
+        return types.FunctionResponsePart(
+            file_data=types.FunctionResponseFileData(file_uri=url, mime_type=mime_type)
+        )
+    raise ValueError(f"{type(block).__name__} must have either 'data' or 'url' set")
 
 
 class GoogleProvider:
     def __init__(
         self,
         api_key: str | None = None,
-        model: str | None = None,
-        client_options: dict | None = None,
+        client: Any | None = None,
+        http_options: dict | None = None,
     ) -> None:
-        if api_key is not None:
-            genai.configure(api_key=api_key)
-        self._model_name = model
-        self._client_options = client_options
-        if model:
-            self._model = genai.GenerativeModel(model, client_options=client_options)
+        if client is not None:
+            self._client = client
         else:
-            self._model = None
+            kwargs: dict[str, Any] = {}
+            if api_key is not None:
+                kwargs["api_key"] = api_key
+            if http_options is not None:
+                kwargs["http_options"] = http_options
+            self._client = genai.Client(**kwargs)
+        self._aio = self._client.aio
 
     async def create(
         self,
@@ -40,108 +75,121 @@ class GoogleProvider:
         system_prompt: str | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
-        target_model = model or self._model_name
-        if not target_model:
-            raise ValueError("model is required")
-
         system_parts: list[str] = []
-        google_contents: list[Any] = []
-        current_tool_parts: list[Any] = []
+        if system_prompt:
+            system_parts.append(system_prompt)
+        for msg in messages:
+            if msg.role == "system":
+                system_parts.append(msg.content)
+        system_instruction = "\n".join(system_parts) if system_parts else None
 
-        for message in messages:
-            if message.role == "system":
-                system_parts.append(message.content)
-            elif message.role == "user":
-                if current_tool_parts:
-                    google_contents.append(genai.Content(role="user", parts=current_tool_parts))
-                    current_tool_parts = []
-                google_contents.append(
-                    genai.Content(
-                        role="user",
-                        parts=[genai.Part.from_text(text=message.content)],
-                    )
-                )
-            elif message.role == "assistant":
-                if current_tool_parts:
-                    google_contents.append(genai.Content(role="user", parts=current_tool_parts))
-                    current_tool_parts = []
+        conversation: list[Any] = []
+
+        for msg in messages:
+            if msg.role == "system":
+                continue
+            if msg.role == "user":
+                if isinstance(msg.content, list):
+                    parts = [self._content_block_to_part(b) for b in msg.content]
+                else:
+                    parts = [types.Part.from_text(text=msg.content)]
+                conversation.append(types.Content(role="user", parts=parts))
+                continue
+            if msg.role == "assistant":
                 parts: list[Any] = []
-                if message.content:
-                    parts.append(genai.Part.from_text(text=message.content))
-                if message.tool_calls:
-                    for tc in message.tool_calls:
-                        parts.append(genai.Part.from_function_call(name=tc.name, args=tc.arguments))
-                google_contents.append(genai.Content(role="model", parts=parts))
-            elif message.role == "tool":
-                current_tool_parts.append(
-                    genai.Part.from_function_response(
-                        name=message.name or "tool",
-                        response={"result": message.content},
+                if msg.content:
+                    if isinstance(msg.content, list):
+                        parts.extend(self._content_block_to_part(b) for b in msg.content)
+                    else:
+                        parts.append(types.Part.from_text(text=msg.content))
+                if msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        parts.append(types.Part.from_function_call(name=tc.name, args=tc.arguments))
+                conversation.append(types.Content(role="model", parts=parts))
+                continue
+            if msg.role == "tool":
+                if isinstance(msg.content, list):
+                    text_blocks = _text_blocks(msg.content)
+                    output_text = " ".join(b.text for b in text_blocks)
+                    response_payload: dict[str, Any] = {"output": output_text}
+                    response_parts = [
+                        _build_function_response_part(b)
+                        for b in msg.content
+                        if not _is_text_block(b)
+                    ]
+                    part_kwargs: dict[str, Any] = {
+                        "name": msg.name or "tool",
+                        "response": response_payload,
+                    }
+                    if response_parts:
+                        part_kwargs["parts"] = response_parts
+                    part = types.Part.from_function_response(**part_kwargs)
+                else:
+                    part = types.Part.from_function_response(
+                        name=msg.name or "tool",
+                        response={"output": msg.content},
                     )
-                )
+                conversation.append(types.Content(role="user", parts=[part]))
+                continue
 
-        if current_tool_parts:
-            google_contents.append(genai.Content(role="user", parts=current_tool_parts))
-
-        system_instruction = system_prompt
-        if system_parts:
-            joined = "\n".join(system_parts)
-            if system_instruction is None:
-                system_instruction = joined
-            else:
-                system_instruction = f"{system_instruction}\n{joined}"
-
-        google_tools: list[dict[str, Any]] | None = None
+        config_kwargs: dict[str, Any] = {}
+        if system_instruction is not None:
+            config_kwargs["system_instruction"] = system_instruction
         if tools:
             declarations = [
-                {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters,
-                }
-                for tool in tools
+                types.FunctionDeclaration(
+                    name=t.name,
+                    description=t.description,
+                    parameters_json_schema=t.parameters,
+                )
+                for t in tools
             ]
-            google_tools = [{"function_declarations": declarations}]
+            config_kwargs["tools"] = [types.Tool(function_declarations=declarations)]
+        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
-        if (
-            self._model is not None
-            and self._model_name == target_model
-            and system_instruction is None
-        ):
-            model_obj = self._model
-        else:
-            model_obj = genai.GenerativeModel(
-                model_name=target_model,
-                system_instruction=system_instruction,
-                client_options=self._client_options,
-            )
+        call_kwargs: dict[str, Any] = {"model": model, "contents": conversation}
+        if config is not None:
+            call_kwargs["config"] = config
+        call_kwargs.update(kwargs)
 
-        response = model_obj.generate_content(
-            contents=google_contents,
-            tools=google_tools,
-            **kwargs,
-        )
+        response = await self._aio.models.generate_content(**call_kwargs)
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
-
-        candidate = response.candidates[0]
-        for part in candidate.content.parts:
-            if part.text:
-                text_parts.append(part.text)
-            if part.function_call:
-                tool_calls.append(
-                    ToolCall(
-                        id=f"call_{uuid.uuid4().hex[:24]}",
-                        name=part.function_call.name,
-                        arguments=dict(part.function_call.args),
+        if getattr(response, "candidates", None):
+            candidate = response.candidates[0]
+            for part in getattr(candidate.content, "parts", []) or []:
+                if getattr(part, "text", None):
+                    text_parts.append(part.text)
+                fc = getattr(part, "function_call", None)
+                if fc is not None:
+                    call_id = getattr(fc, "id", None) or self._gen_call_id()
+                    tool_calls.append(
+                        ToolCall(
+                            id=call_id,
+                            name=fc.name or "",
+                            arguments=dict(fc.args) if fc.args else {},
+                        )
                     )
-                )
+        if not text_parts and not tool_calls:
+            if getattr(response, "function_calls", None):
+                for fc in response.function_calls:
+                    call_id = getattr(fc, "id", None) or self._gen_call_id()
+                    tool_calls.append(
+                        ToolCall(
+                            id=call_id,
+                            name=fc.name or "",
+                            arguments=dict(fc.args) if fc.args else {},
+                        )
+                    )
+            elif getattr(response, "text", None):
+                text_parts.append(response.text)
 
         usage = None
-        if response.usage_metadata:
-            prompt_tokens = response.usage_metadata.prompt_token_count
-            completion_tokens = response.usage_metadata.candidates_token_count
+        usage_metadata = getattr(response, "usage_metadata", None)
+        if usage_metadata is not None:
+            prompt_tokens = getattr(usage_metadata, "prompt_token_count", 0) or 0
+            completion_tokens = getattr(usage_metadata, "candidates_token_count", 0) or 0
             usage = Usage(
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
@@ -156,7 +204,12 @@ class GoogleProvider:
         )
 
     def format_assistant_message(self, response: LLMResponse) -> Message:
-        tool_calls = [tc for tc in response.tool_calls] if response.tool_calls else None
+        tool_calls = None
+        if response.tool_calls:
+            tool_calls = [
+                ToolCall(id=tc.id, name=tc.name, arguments=dict(tc.arguments))
+                for tc in response.tool_calls
+            ]
         return Message(
             role="assistant",
             content=response.content or "",
@@ -164,20 +217,49 @@ class GoogleProvider:
         )
 
     def format_tool_result(self, tool_call: ToolCall, result: ToolResult) -> Message:
+        if result.content is not None:
+            return Message(
+                role="tool",
+                content=result.content,
+                tool_call_id=result.tool_call_id,
+                name=tool_call.name,
+            )
         return Message(
             role="tool",
-            content=str(result.content) if hasattr(result, "content") else str(result),
-            tool_call_id=tool_call.id,
+            content=result.blocks,
+            tool_call_id=result.tool_call_id,
             name=tool_call.name,
         )
 
+    @staticmethod
+    def _gen_call_id() -> str:
+        return f"call_{uuid.uuid4().hex[:24]}"
 
-provider = GoogleProvider()
+    @staticmethod
+    def _content_block_to_part(block: Any) -> Any:
+        if isinstance(block, TextBlock):
+            return types.Part.from_text(text=block.text)
+        mime_type = getattr(block, "mime_type", None)
+        data = getattr(block, "data", None)
+        url = getattr(block, "url", None)
+        if data is not None:
+            if mime_type is None:
+                raise ValueError(f"{type(block).__name__} requires 'mime_type' when 'data' is set")
+            return types.Part.from_bytes(data=data, mime_type=mime_type)
+        if url is not None:
+            return types.Part.from_uri(file_uri=url, mime_type=mime_type)
+        raise ValueError(f"{type(block).__name__} must have either 'data' or 'url' set")
+
+
+try:
+    provider = GoogleProvider()
+except Exception:
+    provider = None
 
 
 def register(
     api_key: str | None = None,
-    client_options: dict | None = None,
     name: str = "google",
+    http_options: dict | None = None,
 ) -> None:
-    register_provider(name, GoogleProvider(api_key=api_key, client_options=client_options))
+    register_provider(name, GoogleProvider(api_key=api_key, http_options=http_options))

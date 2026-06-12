@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import pytest
 
-from coreouto._types import AgentConfig, Message, ToolCall, ToolResult
+from coreouto._types import (
+    AgentConfig,
+    ImageBlock,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+)
 from coreouto.agent import _DEFAULT_SYSTEM_PROMPT, Agent, MaxIterationsError
 from coreouto.hooks import (
     AFTER_LLM_CALL,
@@ -789,3 +796,79 @@ async def test_on_finish_hook_receives_extracted_content():
     assert received[0]["raw_content"] == "<finish>my answer</finish>"
     assert received[0]["iterations"] == 1
     assert "messages" in received[0]
+
+
+async def test_tool_returning_list_of_content_blocks():
+    @register_tool("show_image")
+    async def show_image(label: str) -> list:
+        return [
+            TextBlock(text=f"Image for: {label}"),
+            ImageBlock(data=b"\\x89PNG\\r\\nfake-bytes", mime_type="image/png"),
+        ]
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "show_image", "arguments": {"label": "cat"}}]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("show me a cat")
+
+    assert response.content == "done"
+    assert len(provider.calls) == 2
+    second_call_messages = provider.calls[1]["messages"]
+    tool_msg = next(m for m in second_call_messages if m.role == "tool")
+    assert tool_msg.tool_call_id == "tc1"
+    assert isinstance(tool_msg.content, list)
+    assert len(tool_msg.content) == 2
+    assert isinstance(tool_msg.content[0], TextBlock)
+    assert tool_msg.content[0].text == "Image for: cat"
+    assert isinstance(tool_msg.content[1], ImageBlock)
+    assert tool_msg.content[1].data == b"\\x89PNG\\r\\nfake-bytes"
+    assert tool_msg.content[1].mime_type == "image/png"
+
+
+async def test_tool_returning_tool_result_with_blocks():
+    @register_tool("fetch")
+    async def fetch(q: str) -> ToolResult:
+        return ToolResult(
+            tool_call_id="",
+            blocks=[ImageBlock(data=b"jpeg-bytes", mime_type="image/jpeg")],
+        )
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(tool_calls=[{"id": "tc1", "name": "fetch", "arguments": {"q": "x"}}])
+    )
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("fetch")
+
+    tool_msg = next(m for m in provider.calls[1]["messages"] if m.role == "tool")
+    assert isinstance(tool_msg.content, list)
+    assert tool_msg.content[0].data == b"jpeg-bytes"
+
+
+async def test_tool_returning_plain_string_still_works():
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"got: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}])
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("test")
+
+    tool_msg = next(m for m in provider.calls[1]["messages"] if m.role == "tool")
+    assert tool_msg.content == "got: hi"

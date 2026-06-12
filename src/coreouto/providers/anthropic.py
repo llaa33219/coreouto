@@ -1,8 +1,20 @@
 from __future__ import annotations
 
+import base64
 from typing import Any
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult, Usage
+from coreouto._types import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    LLMResponse,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    Usage,
+    VideoBlock,
+)
 from coreouto.providers import register_provider
 from coreouto.tools import Tool
 
@@ -145,6 +157,93 @@ class AnthropicProvider:
         )
 
     def format_tool_result(self, tool_call: ToolCall, result: ToolResult) -> Message:
+        if result.blocks is not None:
+            wire_blocks: list[dict[str, Any]] = []
+            for block in result.blocks:
+                if isinstance(block, TextBlock):
+                    wire_blocks.append({"type": "text", "text": block.text})
+                elif isinstance(block, ImageBlock):
+                    if block.data is not None:
+                        wire_blocks.append(
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.mime_type,
+                                    "data": base64.b64encode(block.data).decode("ascii"),
+                                },
+                            }
+                        )
+                    else:
+                        wire_blocks.append(
+                            {
+                                "type": "image",
+                                "source": {"type": "url", "url": block.url},
+                            }
+                        )
+                elif isinstance(block, DocumentBlock):
+                    if block.data is not None:
+                        wire_blocks.append(
+                            {
+                                "type": "document",
+                                "source": {
+                                    "type": "text",
+                                    "media_type": block.mime_type,
+                                    "data": base64.b64encode(block.data).decode("ascii"),
+                                },
+                            }
+                        )
+                    else:
+                        wire_blocks.append(
+                            {
+                                "type": "document",
+                                "source": {"type": "url", "url": block.url},
+                            }
+                        )
+                elif isinstance(block, VideoBlock):
+                    if block.data is not None:
+                        wire_blocks.append(
+                            {
+                                "type": "video",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.mime_type,
+                                    "data": base64.b64encode(block.data).decode("ascii"),
+                                },
+                            }
+                        )
+                    else:
+                        wire_blocks.append(
+                            {
+                                "type": "video",
+                                "source": {"type": "url", "url": block.url},
+                            }
+                        )
+                elif isinstance(block, AudioBlock):
+                    if block.data is not None:
+                        wire_blocks.append(
+                            {
+                                "type": "audio",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": block.mime_type,
+                                    "data": base64.b64encode(block.data).decode("ascii"),
+                                },
+                            }
+                        )
+                    else:
+                        wire_blocks.append(
+                            {
+                                "type": "audio",
+                                "source": {"type": "url", "url": block.url},
+                            }
+                        )
+            return Message.model_construct(
+                role="tool",
+                content=wire_blocks,
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+            )
         return Message(
             role="tool",
             content=result.content,

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult
+from coreouto._types import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    LLMResponse,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    VideoBlock,
+)
 from coreouto.providers.openai_response import OpenAIResponseProvider
 from coreouto.tools import Tool
 
@@ -442,6 +453,180 @@ def test_format_tool_result(provider: OpenAIResponseProvider) -> None:
     assert msg.content == "data"
     assert msg.tool_call_id == "tc_99"
     assert msg.name == "fetch"
+
+
+def test_format_tool_result_image_data(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_img", name="snap", arguments={})
+    raw = b"\x89PNG\r\n\x1a\nfake-bytes"
+    result = ToolResult(
+        tool_call_id="tc_img",
+        blocks=[ImageBlock(data=raw, mime_type="image/png")],
+        is_error=False,
+    )
+    msg = provider.format_tool_result(tool_call, result)
+
+    assert msg.role == "tool"
+    assert msg.tool_call_id == "tc_img"
+    assert msg.name == "snap"
+    expected_b64 = base64.b64encode(raw).decode("ascii")
+    assert msg.content == [
+        {
+            "type": "input_image",
+            "image_url": f"data:image/png;base64,{expected_b64}",
+        }
+    ]
+
+
+def test_format_tool_result_image_url(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_img2", name="snap", arguments={})
+    result = ToolResult(
+        tool_call_id="tc_img2",
+        blocks=[ImageBlock(url="https://example.com/cat.png")],
+        is_error=False,
+    )
+    msg = provider.format_tool_result(tool_call, result)
+
+    assert msg.content == [
+        {
+            "type": "input_image",
+            "image_url": "https://example.com/cat.png",
+        }
+    ]
+
+
+def test_format_tool_result_text_and_image(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_mix", name="describe", arguments={})
+    raw = b"\x00\x01\x02"
+    result = ToolResult(
+        tool_call_id="tc_mix",
+        blocks=[
+            TextBlock(text="look at this:"),
+            ImageBlock(data=raw, mime_type="image/jpeg"),
+        ],
+        is_error=False,
+    )
+    msg = provider.format_tool_result(tool_call, result)
+
+    expected_b64 = base64.b64encode(raw).decode("ascii")
+    assert msg.content == [
+        {"type": "input_text", "text": "look at this:"},
+        {"type": "input_image", "image_url": f"data:image/jpeg;base64,{expected_b64}"},
+    ]
+
+
+def test_format_tool_result_document_data(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_doc", name="read_pdf", arguments={})
+    raw = b"%PDF-1.4 fake"
+    result = ToolResult(
+        tool_call_id="tc_doc",
+        blocks=[DocumentBlock(data=raw, mime_type="application/pdf")],
+        is_error=False,
+    )
+    msg = provider.format_tool_result(tool_call, result)
+
+    expected_b64 = base64.b64encode(raw).decode("ascii")
+    assert msg.content == [
+        {
+            "type": "input_file",
+            "filename": "document.pdf",
+            "file_data": expected_b64,
+        }
+    ]
+
+
+def test_format_tool_result_document_url(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_doc2", name="read_doc", arguments={})
+    result = ToolResult(
+        tool_call_id="tc_doc2",
+        blocks=[DocumentBlock(url="https://example.com/paper.pdf")],
+        is_error=False,
+    )
+    msg = provider.format_tool_result(tool_call, result)
+
+    assert msg.content == [
+        {
+            "type": "input_file",
+            "file_url": "https://example.com/paper.pdf",
+        }
+    ]
+
+
+def test_format_tool_result_video_block_raises(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_vid", name="rec", arguments={})
+    result = ToolResult(
+        tool_call_id="tc_vid",
+        blocks=[VideoBlock(data=b"\x00", mime_type="video/mp4")],
+        is_error=False,
+    )
+    with pytest.raises(ValueError, match="video/audio"):
+        provider.format_tool_result(tool_call, result)
+
+
+def test_format_tool_result_audio_block_raises(provider: OpenAIResponseProvider) -> None:
+    tool_call = ToolCall(id="tc_aud", name="listen", arguments={})
+    result = ToolResult(
+        tool_call_id="tc_aud",
+        blocks=[AudioBlock(data=b"\x00", mime_type="audio/mpeg")],
+        is_error=False,
+    )
+    with pytest.raises(ValueError, match="video/audio"):
+        provider.format_tool_result(tool_call, result)
+
+
+async def test_create_with_multimodal_tool_result(
+    provider: OpenAIResponseProvider, fake_client: FakeAsyncOpenAI
+) -> None:
+    fake_client.responses = FakeResponsesClient(
+        responses=[
+            FakeResponse(
+                output=[
+                    FakeResponseItem(
+                        type="message",
+                        role="assistant",
+                        content=[{"type": "output_text", "text": "Got it"}],
+                    )
+                ],
+                usage=FakeUsage(input_tokens=6, output_tokens=2),
+            )
+        ]
+    )
+
+    raw = b"\x89PNG\r\n"
+    tool_call = ToolCall(id="call_mm", name="snap", arguments={})
+    tool_msg = provider.format_tool_result(
+        tool_call,
+        ToolResult(
+            tool_call_id="call_mm",
+            blocks=[ImageBlock(data=raw, mime_type="image/png")],
+            is_error=False,
+        ),
+    )
+    messages = [
+        Message(role="user", content="snap this"),
+        tool_msg,
+    ]
+    result = await provider.create(messages=messages, model="gpt-4o")
+
+    assert result.content == "Got it"
+    call = fake_client.responses.calls[0]
+    expected_b64 = base64.b64encode(raw).decode("ascii")
+    assert call["input"] == [
+        {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "snap this"}],
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_mm",
+            "output": [
+                {
+                    "type": "input_image",
+                    "image_url": f"data:image/png;base64,{expected_b64}",
+                }
+            ],
+        },
+    ]
 
 
 def test_provider_satisfies_protocol() -> None:

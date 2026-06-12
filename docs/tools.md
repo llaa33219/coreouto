@@ -187,4 +187,67 @@ preset = co.register_agent_preset(
 )
 ```
 
+## Multimodal tool results
+
+A tool can return images, documents, video, or audio — not just text. The agent loop forwards these to the LLM so the model can actually see or read the returned file. Return either a list of `ContentBlock` objects or a `ToolResult` with `blocks=...`:
+
+```python
+import coreouto as co
+
+@co.register_tool("screenshot")
+async def screenshot(url: str) -> list[co.ContentBlock]:
+    png_bytes = ...  # capture the screenshot
+    return [
+        co.TextBlock(text=f"Screenshot of {url}:"),
+        co.ImageBlock(data=png_bytes, mime_type="image/png"),
+    ]
+
+
+@co.register_tool("fetch_pdf")
+async def fetch_pdf(ticker: str) -> co.ToolResult:
+    pdf_bytes = ...
+    return co.ToolResult(
+        tool_call_id="",  # the agent loop fills this in
+        blocks=[
+            co.DocumentBlock(data=pdf_bytes, mime_type="application/pdf"),
+        ],
+    )
+
+
+@co.register_tool("classify_chart")
+async def classify_chart(image_url: str) -> co.ToolResult:
+    return co.ToolResult(
+        tool_call_id="",
+        blocks=[
+            co.ImageBlock(url=image_url),
+            co.TextBlock(text="Caption: daily active users, last 30 days."),
+        ],
+    )
+```
+
+You can also return a plain string (legacy shape) and coreouto will wrap it in a `ToolResult` for you.
+
+### Content block types
+
+| Block | Fields | Notes |
+|---|---|---|
+| `TextBlock` | `text: str` | Plain text. |
+| `ImageBlock` | `data: bytes` or `url: str`; `mime_type` required when `data` is set | PNG, JPEG, GIF, WebP. |
+| `DocumentBlock` | `data: bytes` or `url: str`; `mime_type` required when `data` is set | PDF, text, etc. |
+| `VideoBlock` | `data: bytes` or `url: str`; `mime_type` required when `data` is set | MP4, MOV, WebM. |
+| `AudioBlock` | `data: bytes` or `url: str`; `mime_type` required when `data` is set | WAV, MP3. |
+
+### Provider support
+
+| Provider | `image` | `document` | `video` | `audio` |
+|---|---|---|---|---|
+| Anthropic | yes | yes | yes | yes |
+| Google (new SDK) | yes | yes | yes | yes |
+| OpenAI Responses API | yes | yes | no — `ValueError` | no — `ValueError` |
+| OpenAI Chat Completions | no — `ValueError` | no — `ValueError` | no — `ValueError` | no — `ValueError` |
+
+If you need multimodal tool results, register the multimodal-capable provider. For example, switch the preset's `provider="openai"` to `provider="openai-response"` to enable image and document results on OpenAI.
+
+For full per-provider wire-format details, see [Providers — Multimodal support](providers.md#multimodal-support).
+
 

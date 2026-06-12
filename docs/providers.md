@@ -379,3 +379,14 @@ preset = co.register_agent_preset(
 ```
 
 > Using a non-canonical key in `provider_config` raises `ValueError`; use `provider_passthrough` instead.
+
+## Multimodal support
+
+When a tool returns images, documents, video, or audio, coreouto's `format_tool_result` translates the `ContentBlock` list into the provider's native wire shape. Support is asymmetric — see [Tools — Multimodal tool results](tools.md#multimodal-tool-results) for the matrix. In short:
+
+- **Anthropic** — full support (`image` / `document` / `video` / `audio` blocks with base64 or URL sources).
+- **Google (new SDK)** — full support via `types.FunctionResponsePart(inline_data=types.FunctionResponseBlob(...))` for binary data and `file_data` for URLs.
+- **OpenAI Responses API** — supports `image` and `document` (as `input_image` and `input_file`); raises `ValueError` for `video` or `audio` blocks (the Responses API has no `input_video` / `input_audio` content part).
+- **OpenAI Chat Completions** — raises `ValueError` for any multimodal block; the API itself does not allow image content in tool messages.
+
+If a tool returns an unsupported block type for the active provider, you'll get a clear `ValueError` pointing at the alternative provider. Switch the preset to a multimodal-capable provider to enable images and documents.

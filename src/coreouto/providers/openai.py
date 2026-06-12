@@ -138,6 +138,14 @@ class OpenAIProvider:
         )
 
     def format_tool_result(self, tool_call: ToolCall, result: ToolResult) -> Message:
+        if result.blocks is not None:
+            block_types = sorted({b.type for b in result.blocks if b.type != "text"})
+            detected = ", ".join(f"{t} block detected" for t in block_types) or "multimodal blocks"
+            raise ValueError(
+                f"OpenAI Chat Completions does not support multimodal tool results "
+                f"({detected}). Use the 'openai-response' provider instead, which "
+                f"supports tool results with text + image content."
+            )
         return Message(
             role="tool",
             tool_call_id=tool_call.id,

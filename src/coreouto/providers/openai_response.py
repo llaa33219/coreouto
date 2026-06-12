@@ -1,11 +1,38 @@
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any
 
-from coreouto._types import LLMResponse, Message, ToolCall, Usage
+from coreouto._types import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    LLMResponse,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    Usage,
+    VideoBlock,
+)
 from coreouto.providers import register_provider
 from coreouto.tools import Tool
+
+_MIME_EXTENSIONS: dict[str, str] = {
+    "application/pdf": "pdf",
+    "application/json": "json",
+    "text/plain": "txt",
+    "text/csv": "csv",
+    "text/html": "html",
+    "text/markdown": "md",
+}
+
+
+def _doc_extension(mime_type: str | None) -> str:
+    if mime_type is None:
+        return "bin"
+    return _MIME_EXTENSIONS.get(mime_type, mime_type.split("/", 1)[-1] or "bin")
 
 
 class OpenAIResponseProvider:
@@ -166,12 +193,61 @@ class OpenAIResponseProvider:
         )
 
     def format_tool_result(self, tool_call: ToolCall, result: Any) -> Message:
-        from coreouto._types import ToolResult
+        if not isinstance(result, ToolResult):
+            return Message(
+                role="tool",
+                content=str(result),
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+            )
 
-        content = str(result.content) if isinstance(result, ToolResult) else str(result)
-        return Message(
+        if result.content is not None:
+            return Message(
+                role="tool",
+                content=result.content,
+                tool_call_id=tool_call.id,
+                name=tool_call.name,
+            )
+
+        output: list[dict[str, Any]] = []
+        for block in result.blocks or []:
+            if isinstance(block, TextBlock):
+                output.append({"type": "input_text", "text": block.text})
+            elif isinstance(block, ImageBlock):
+                if block.data is not None:
+                    b64 = base64.b64encode(block.data).decode("ascii")
+                    output.append(
+                        {
+                            "type": "input_image",
+                            "image_url": f"data:{block.mime_type};base64,{b64}",
+                        }
+                    )
+                else:
+                    output.append({"type": "input_image", "image_url": block.url})
+            elif isinstance(block, DocumentBlock):
+                if block.data is not None:
+                    b64 = base64.b64encode(block.data).decode("ascii")
+                    filename = f"document.{_doc_extension(block.mime_type)}"
+                    output.append(
+                        {
+                            "type": "input_file",
+                            "filename": filename,
+                            "file_data": b64,
+                        }
+                    )
+                else:
+                    output.append({"type": "input_file", "file_url": block.url})
+            elif isinstance(block, (VideoBlock, AudioBlock)):
+                raise ValueError(
+                    "OpenAI Responses does not support video/audio blocks in "
+                    "tool results. Use Anthropic or Google for that."
+                )
+            else:
+                raise TypeError(f"unsupported content block: {type(block).__name__}")
+
+        return Message.model_construct(
             role="tool",
-            content=content,
+            content=output,
             tool_call_id=tool_call.id,
             name=tool_call.name,
         )

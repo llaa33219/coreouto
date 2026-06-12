@@ -6,7 +6,14 @@ from typing import Any
 
 import pytest
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult, Usage
+from coreouto._types import (
+    ImageBlock,
+    LLMResponse,
+    Message,
+    ToolCall,
+    ToolResult,
+    Usage,
+)
 from coreouto.providers import openai as openai_provider
 from coreouto.tools import Tool
 
@@ -234,6 +241,35 @@ def test_format_tool_result() -> None:
         content="found",
         name="search",
     )
+
+
+def test_format_tool_result_text_only_unchanged() -> None:
+    provider = openai_provider.OpenAIProvider(client=FakeAsyncOpenAI(None))
+    tool_call = ToolCall(id="tc1", name="search", arguments={"query": "x"})
+    result = ToolResult(tool_call_id="tc1", content="just text")
+
+    message = provider.format_tool_result(tool_call, result)
+
+    assert message.role == "tool"
+    assert message.tool_call_id == "tc1"
+    assert message.content == "just text"
+    assert message.name == "search"
+
+
+def test_format_tool_result_multimodal_raises() -> None:
+    provider = openai_provider.OpenAIProvider(client=FakeAsyncOpenAI(None))
+    tool_call = ToolCall(id="tc1", name="search", arguments={"query": "x"})
+    result = ToolResult(
+        tool_call_id="tc1",
+        blocks=[ImageBlock(url="https://example.com/cat.png", mime_type="image/png")],
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        provider.format_tool_result(tool_call, result)
+
+    msg = str(excinfo.value)
+    assert "image block detected" in msg
+    assert "openai-response" in msg
 
 
 def test_import_error_when_openai_missing(monkeypatch: pytest.MonkeyPatch) -> None:

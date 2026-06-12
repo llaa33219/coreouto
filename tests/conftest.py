@@ -92,9 +92,15 @@ class MockProvider:
         from coreouto._types import Message
 
         self.formatted_tool_results.append((tool_call, result))
+        if hasattr(result, "blocks") and result.blocks is not None:
+            content: Any = list(result.blocks)
+        elif hasattr(result, "content") and isinstance(result.content, str):
+            content = result.content
+        else:
+            content = str(getattr(result, "content", result))
         return Message(
             role="tool",
-            content=str(result.content) if hasattr(result, "content") else str(result),
+            content=content,
             tool_call_id=tool_call.id if hasattr(tool_call, "id") else tool_call["id"],
             name=tool_call.name if hasattr(tool_call, "name") else tool_call["name"],
         )

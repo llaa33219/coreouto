@@ -5,7 +5,17 @@ from typing import Any
 
 import pytest
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult
+from coreouto._types import (
+    AudioBlock,
+    DocumentBlock,
+    ImageBlock,
+    LLMResponse,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    VideoBlock,
+)
 from coreouto.providers.base import Provider
 from coreouto.tools import Tool
 
@@ -421,3 +431,197 @@ async def test_create_forwards_thinking_and_output_config(provider, fake_client)
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": "medium"},
     }
+
+
+def test_format_tool_result_image_data(provider):
+    tc = ToolCall(id="tc1", name="snap", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[ImageBlock(data=b"hello", mime_type="image/jpeg")],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.role == "tool"
+    assert msg.tool_call_id == "tc1"
+    assert msg.name == "snap"
+    assert msg.content == [
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/jpeg",
+                "data": "aGVsbG8=",
+            },
+        }
+    ]
+
+
+def test_format_tool_result_image_url(provider):
+    tc = ToolCall(id="tc1", name="snap", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[ImageBlock(url="https://example.com/cat.png")],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.content == [
+        {
+            "type": "image",
+            "source": {
+                "type": "url",
+                "url": "https://example.com/cat.png",
+            },
+        }
+    ]
+
+
+def test_format_tool_result_text_and_image(provider):
+    tc = ToolCall(id="tc1", name="snap", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[
+            TextBlock(text="a picture"),
+            ImageBlock(data=b"hello", mime_type="image/png"),
+        ],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.content == [
+        {"type": "text", "text": "a picture"},
+        {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "aGVsbG8=",
+            },
+        },
+    ]
+
+
+def test_format_tool_result_document_data(provider):
+    tc = ToolCall(id="tc1", name="read", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[DocumentBlock(data=b"PDFDATA", mime_type="application/pdf")],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.content == [
+        {
+            "type": "document",
+            "source": {
+                "type": "text",
+                "media_type": "application/pdf",
+                "data": "UERGREFUQQ==",
+            },
+        }
+    ]
+
+
+def test_format_tool_result_document_url(provider):
+    tc = ToolCall(id="tc1", name="read", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[DocumentBlock(url="https://example.com/doc.pdf", mime_type="application/pdf")],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.content == [
+        {
+            "type": "document",
+            "source": {
+                "type": "url",
+                "url": "https://example.com/doc.pdf",
+            },
+        }
+    ]
+
+
+def test_format_tool_result_video_data(provider):
+    tc = ToolCall(id="tc1", name="vid", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[VideoBlock(data=b"hello", mime_type="video/mp4")],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.content == [
+        {
+            "type": "video",
+            "source": {
+                "type": "base64",
+                "media_type": "video/mp4",
+                "data": "aGVsbG8=",
+            },
+        }
+    ]
+
+
+def test_format_tool_result_audio_data(provider):
+    tc = ToolCall(id="tc1", name="aud", arguments={})
+    tr = ToolResult(
+        tool_call_id="tc1",
+        blocks=[AudioBlock(data=b"hello", mime_type="audio/mpeg")],
+    )
+    msg = provider.format_tool_result(tc, tr)
+    assert msg.content == [
+        {
+            "type": "audio",
+            "source": {
+                "type": "base64",
+                "media_type": "audio/mpeg",
+                "data": "aGVsbG8=",
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_create_with_multimodal_tool_result(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="got it")],
+            usage=FakeUsage(input_tokens=4, output_tokens=2),
+        )
+    )
+    tc = ToolCall(id="tu_img", name="snap", arguments={})
+    tr = ToolResult(
+        tool_call_id="tu_img",
+        blocks=[ImageBlock(data=b"hello", mime_type="image/jpeg")],
+    )
+    await provider.create(
+        messages=[
+            Message(role="user", content="take a photo"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=[tc],
+            ),
+            provider.format_tool_result(tc, tr),
+        ],
+        model="claude-3-haiku-20240307",
+    )
+    call = fake_client.messages.calls[0]
+    assert call["messages"] == [
+        {"role": "user", "content": [{"type": "text", "text": "take a photo"}]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "tu_img", "name": "snap", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tu_img",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": "aGVsbG8=",
+                            },
+                        }
+                    ],
+                }
+            ],
+        },
+    ]

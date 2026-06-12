@@ -38,11 +38,11 @@ dev = [
 ]
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.18"]
-google = ["google-generativeai>=0.3"]
+google = ["google-genai>=1.0"]
 all = [
     "openai>=1.0",
     "anthropic>=0.18",
-    "google-generativeai>=0.3",
+    "google-genai>=1.0",
 ]
 
 [project.urls]
