@@ -32,10 +32,34 @@ from coreouto.settings import normalize_provider_config
 from coreouto.tools import get_tool
 
 _FINISH_RE = re.compile(r"<finish>(.*?)</finish>", re.DOTALL)
+_THINK_OPEN_RE = re.compile(r"<think>")
+_THINK_CLOSE_RE = re.compile(r"</think>")
 _FINISH_REMINDER = (
     "Reminder: wrap your final answer in <finish>...</finish> tags so I can return it."
 )
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
+
+
+def _extract_final_answer(text: str) -> str | None:
+    """Return the contents of the first `<finish>...</finish>` block that is
+    NOT inside a `<think>...</think>` region, or None if there is no such match.
+    """
+    think_spans: list[tuple[int, int]] = []
+    cursor = 0
+    for open_match in _THINK_OPEN_RE.finditer(text):
+        if open_match.start() < cursor:
+            continue
+        close_match = _THINK_CLOSE_RE.search(text, open_match.end())
+        if close_match is None:
+            think_spans.append((open_match.start(), len(text)))
+            break
+        think_spans.append((open_match.start(), close_match.end()))
+        cursor = close_match.end()
+    for match in _FINISH_RE.finditer(text):
+        inside = any(start <= match.start() < end for start, end in think_spans)
+        if not inside:
+            return match.group(1).strip()
+    return None
 
 
 def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
@@ -64,8 +88,11 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are an agent. Use tools to gather information, then return your final answer to the user.\n\n"
     "CRITICAL: When you are done, your final user-facing answer MUST be wrapped in <finish>...</finish> tags. "
     "The text inside the tags is what the user will see.\n\n"
+    "You may include private reasoning inside <think>...</think> blocks. Anything inside those "
+    "tags is treated as scratch space and is not returned to the user, so feel free to "
+    "restate intermediate steps or quotes from tool output there.\n\n"
     "Example:\n"
-    "The capital of France is Paris.\n"
+    "<think>The user asked for the capital of France. I know it is Paris.</think>\n"
     "<finish>Paris is the capital of France.</finish>\n\n"
     "If you respond with text but no <finish> tags, the loop will continue and you'll be asked to retry."
 )
@@ -181,9 +208,8 @@ class Agent:
             )
 
             last_assistant_text = response.content or ""
-            match = _FINISH_RE.search(last_assistant_text)
-            if match:
-                final_answer = match.group(1).strip()
+            final_answer = _extract_final_answer(last_assistant_text)
+            if final_answer is not None:
                 await trigger(
                     ON_FINISH,
                     content=final_answer,

@@ -495,6 +495,75 @@ async def test_reminder_injected_when_no_finish_tag():
     assert "<finish>" in user_messages[-1].content
 
 
+async def test_finish_inside_think_block_is_ignored():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<think>maybe <finish>oops</finish></think>\n<finish>real answer</finish>"
+        )
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "real answer"
+    assert response.finish_called is True
+
+
+async def test_think_block_with_finish_then_real_finish_outside():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<think>nope<finish>skip me</finish></think> now <finish>take this</finish>"
+        )
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "take this"
+
+
+async def test_unclosed_think_block_consumes_rest_of_response():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<think><finish>never returns"))
+    provider.queue(MockLLMResponse(content="<finish>real</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "real"
+
+
+async def test_multiple_think_blocks_all_ignored():
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<think><finish>a</finish></think> and <think><finish>b</finish></think>\n<finish>c</finish>"
+        )
+    )
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "c"
+
+
+async def test_think_with_no_finish_inside_continues_to_real_finish():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<think>just thinking</think><finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.content == "ok"
+
+
 async def test_history_prepended_to_messages():
     provider = MockProvider()
     provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
