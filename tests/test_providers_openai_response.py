@@ -29,10 +29,18 @@ class FakeUsage:
 
 
 @dataclass
+class FakeOutputText:
+    """Stand-in for openai.types.responses.ResponseOutputText."""
+
+    type: str = "output_text"
+    text: str = ""
+
+
+@dataclass
 class FakeResponseItem:
     type: str
     role: str | None = None
-    content: list[dict[str, Any]] = field(default_factory=list)
+    content: list[Any] = field(default_factory=list)
     call_id: str | None = None
     name: str | None = None
     arguments: str | None = None
@@ -101,7 +109,7 @@ async def test_create_simple_user_message(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "Hello!"}],
+                        content=[FakeOutputText(text="Hello!")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=5, output_tokens=2),
@@ -142,7 +150,7 @@ async def test_create_with_system_prompt(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "OK"}],
+                        content=[FakeOutputText(text="OK")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=3, output_tokens=1),
@@ -168,7 +176,7 @@ async def test_create_with_system_messages(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "Done"}],
+                        content=[FakeOutputText(text="Done")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=4, output_tokens=1),
@@ -200,7 +208,7 @@ async def test_create_with_system_prompt_and_system_messages(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "Yes"}],
+                        content=[FakeOutputText(text="Yes")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=2, output_tokens=1),
@@ -229,7 +237,7 @@ async def test_create_with_tools(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "OK"}],
+                        content=[FakeOutputText(text="OK")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=10, output_tokens=2),
@@ -268,7 +276,7 @@ async def test_create_with_tool_result_message(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "Thanks"}],
+                        content=[FakeOutputText(text="Thanks")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=5, output_tokens=2),
@@ -357,7 +365,7 @@ async def test_create_with_assistant_text_and_tool_calls(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "Let me search."}],
+                        content=[FakeOutputText(text="Let me search.")],
                     ),
                     FakeResponseItem(
                         type="function_call",
@@ -583,7 +591,7 @@ async def test_create_with_multimodal_tool_result(
                     FakeResponseItem(
                         type="message",
                         role="assistant",
-                        content=[{"type": "output_text", "text": "Got it"}],
+                        content=[FakeOutputText(text="Got it")],
                     )
                 ],
                 usage=FakeUsage(input_tokens=6, output_tokens=2),
@@ -635,3 +643,50 @@ def test_provider_satisfies_protocol() -> None:
     fake_client = FakeAsyncOpenAI()
     provider = OpenAIResponseProvider(client=fake_client)
     assert isinstance(provider, Provider)
+
+
+@dataclass
+class TypedOutputText:
+    """Mirrors the OpenAI SDK's ResponseOutputText: typed attrs, no .get()."""
+
+    type: str = "output_text"
+    text: str = ""
+
+
+@dataclass
+class TypedRefusal:
+    """Sibling shape: also a typed object, not a dict."""
+
+    type: str = "refusal"
+    refusal: str = ""
+
+
+async def test_create_parses_typed_response_output_text(
+    provider: OpenAIResponseProvider, fake_client: FakeAsyncOpenAI
+) -> None:
+    """Regression: real OpenAI SDK returns typed objects (ResponseOutputText,
+    ResponseOutputRefusal) that have no .get(). Old code did part.get('type')
+    and crashed silently on text-only responses.
+    """
+    fake_client.responses = FakeResponsesClient(
+        responses=[
+            FakeResponse(
+                output=[
+                    FakeResponseItem(
+                        type="message",
+                        role="assistant",
+                        content=[
+                            TypedOutputText(text="the answer is 42"),
+                            TypedRefusal(refusal="nope"),
+                            TypedOutputText(text=" and also pi"),
+                        ],
+                    )
+                ],
+                usage=FakeUsage(input_tokens=3, output_tokens=2),
+            )
+        ]
+    )
+
+    result = await provider.create(messages=[Message(role="user", content="what?")], model="gpt-4o")
+
+    assert result.content == "the answer is 42 and also pi"

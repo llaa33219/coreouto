@@ -151,8 +151,8 @@ class OpenAIResponseProvider:
         for item in resp.output:
             if getattr(item, "type", None) == "message":
                 for part in getattr(item, "content", []) or []:
-                    if part.get("type") == "output_text":
-                        text_parts.append(part.get("text", ""))
+                    if getattr(part, "type", None) == "output_text":
+                        text_parts.append(getattr(part, "text", "") or "")
             elif getattr(item, "type", None) == "function_call":
                 tool_calls.append(
                     ToolCall(
