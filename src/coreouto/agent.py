@@ -88,11 +88,8 @@ _DEFAULT_SYSTEM_PROMPT = (
     "You are an agent. Use tools to gather information, then return your final answer to the user.\n\n"
     "CRITICAL: When you are done, your final user-facing answer MUST be wrapped in <finish>...</finish> tags. "
     "The text inside the tags is what the user will see.\n\n"
-    "You may include private reasoning inside <think>...</think> blocks. Anything inside those "
-    "tags is treated as scratch space and is not returned to the user, so feel free to "
-    "restate intermediate steps or quotes from tool output there.\n\n"
     "Example:\n"
-    "<think>The user asked for the capital of France. I know it is Paris.</think>\n"
+    "The capital of France is Paris.\n"
     "<finish>Paris is the capital of France.</finish>\n\n"
     "If you respond with text but no <finish> tags, the loop will continue and you'll be asked to retry."
 )
