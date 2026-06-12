@@ -154,7 +154,10 @@ class OpenAIProvider:
         )
 
 
-provider = OpenAIProvider() if AsyncOpenAI is not None else None
+try:
+    provider = OpenAIProvider() if AsyncOpenAI is not None else None
+except Exception:
+    provider = None
 
 
 def register(

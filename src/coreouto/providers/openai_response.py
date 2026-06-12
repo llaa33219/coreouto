@@ -261,4 +261,7 @@ def register(
     register_provider(name, OpenAIResponseProvider(api_key=api_key, base_url=base_url))
 
 
-provider = OpenAIResponseProvider()
+try:
+    provider = OpenAIResponseProvider()
+except Exception:
+    provider = None
