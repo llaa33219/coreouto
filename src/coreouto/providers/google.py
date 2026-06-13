@@ -99,11 +99,26 @@ class GoogleProvider:
                 parts: list[Any] = []
                 if msg.content:
                     if isinstance(msg.content, list):
-                        parts.extend(self._content_block_to_part(b) for b in msg.content)
+                        for item in msg.content:
+                            if isinstance(item, ToolCall):
+                                parts.append(
+                                    types.Part.from_function_call(
+                                        name=item.name, args=item.arguments
+                                    )
+                                )
+                            else:
+                                parts.append(self._content_block_to_part(item))
                     else:
                         parts.append(types.Part.from_text(text=msg.content))
                 if msg.tool_calls:
+                    seen = {
+                        item.id
+                        for item in (msg.content if not isinstance(msg.content, str) else [])
+                        if isinstance(item, ToolCall)
+                    }
                     for tc in msg.tool_calls:
+                        if tc.id in seen:
+                            continue
                         parts.append(types.Part.from_function_call(name=tc.name, args=tc.arguments))
                 conversation.append(types.Content(role="model", parts=parts))
                 continue

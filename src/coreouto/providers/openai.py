@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult, Usage
+from coreouto._types import LLMResponse, Message, TextBlock, ToolCall, ToolResult, Usage
 from coreouto.providers import register_provider
 from coreouto.tools import Tool
 
@@ -48,9 +48,20 @@ class OpenAIProvider:
             elif m.role == "user":
                 msgs.append({"role": "user", "content": m.content})
             elif m.role == "assistant":
+                seen: set[str] = set()
+                if isinstance(m.content, str):
+                    content = m.content
+                else:
+                    parts: list[str] = []
+                    for item in m.content:
+                        if isinstance(item, TextBlock):
+                            parts.append(item.text)
+                        elif isinstance(item, ToolCall):
+                            seen.add(item.id)
+                    content = "".join(parts)
                 msg: dict[str, Any] = {
                     "role": "assistant",
-                    "content": m.content,
+                    "content": content,
                 }
                 if m.tool_calls:
                     msg["tool_calls"] = [
@@ -63,6 +74,7 @@ class OpenAIProvider:
                             },
                         }
                         for tc in m.tool_calls
+                        if tc.id not in seen
                     ]
                 msgs.append(msg)
             elif m.role == "tool":

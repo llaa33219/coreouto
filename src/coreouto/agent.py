@@ -13,6 +13,7 @@ from coreouto._types import (
     Message,
     Response,
     TextBlock,
+    ToolCall,
     ToolResult,
     Usage,
     VideoBlock,
@@ -60,6 +61,57 @@ def _extract_final_answer(text: str) -> str | None:
         if not inside:
             return match.group(1).strip()
     return None
+
+
+async def _run_one_tool_call(tool_call: ToolCall, tool: Any) -> ToolResult:
+    """Execute a single tool call, fire the BEFORE/AFTER hooks, return a ToolResult.
+
+    Sync handlers are run via asyncio.to_thread so they don't block the event
+    loop when this helper is awaited concurrently from asyncio.gather. Async
+    handlers are awaited directly.
+    """
+    assert isinstance(tool_call, ToolCall)
+
+    await trigger(
+        BEFORE_TOOL_CALL,
+        name=tool_call.name,
+        arguments=tool_call.arguments,
+    )
+
+    if tool is None:
+        result = ToolResult(
+            tool_call_id=tool_call.id,
+            content=f"tool not found: {tool_call.name}",
+            is_error=True,
+        )
+    else:
+        try:
+            if inspect.iscoroutinefunction(tool.handler):
+                raw_result = await tool.handler(**tool_call.arguments)
+            else:
+                # Sync handler — offload to a worker thread so it doesn't block
+                # the event loop when invoked concurrently with other tools.
+                raw_result = await asyncio.to_thread(
+                    _invoke_sync_handler, tool.handler, tool_call.arguments
+                )
+            result = _coerce_tool_result(tool_call.id, raw_result)
+        except Exception as exc:
+            result = ToolResult(
+                tool_call_id=tool_call.id,
+                content=f"{type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+
+    await trigger(
+        AFTER_TOOL_CALL,
+        name=tool_call.name,
+        result=result,
+    )
+    return result
+
+
+def _invoke_sync_handler(handler: Any, arguments: dict[str, Any]) -> Any:
+    return handler(**arguments)
 
 
 def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
@@ -229,39 +281,21 @@ class Agent:
                 messages.append(Message(role="user", content=_FINISH_REMINDER))
                 continue
 
-            for tool_call in response.tool_calls:
-                tool = get_tool(tool_call.name)
+            tool_calls = list(response.tool_calls)
+            resolved = [(tc, get_tool(tc.name)) for tc in tool_calls]
+            all_parallelizable = cfg.parallel_tool_calls and all(
+                tool is not None and tool.parallelizable for _, tool in resolved
+            )
 
-                await trigger(
-                    BEFORE_TOOL_CALL,
-                    name=tool_call.name,
-                    arguments=tool_call.arguments,
+            if all_parallelizable and len(tool_calls) > 1:
+                results = await asyncio.gather(
+                    *(_run_one_tool_call(tc, tool) for tc, tool in resolved)
                 )
+            else:
+                results = []
+                for tc, tool in resolved:
+                    results.append(await _run_one_tool_call(tc, tool))
 
-                if tool is None:
-                    result = ToolResult(
-                        tool_call_id=tool_call.id,
-                        content=f"tool not found: {tool_call.name}",
-                        is_error=True,
-                    )
-                else:
-                    try:
-                        raw_result = tool.handler(**tool_call.arguments)
-                        if inspect.iscoroutine(raw_result):
-                            raw_result = await raw_result
-                        result = _coerce_tool_result(tool_call.id, raw_result)
-                    except Exception as exc:
-                        result = ToolResult(
-                            tool_call_id=tool_call.id,
-                            content=f"{type(exc).__name__}: {exc}",
-                            is_error=True,
-                        )
-
-                await trigger(
-                    AFTER_TOOL_CALL,
-                    name=tool_call.name,
-                    result=result,
-                )
-
+            for tool_call, result in zip(tool_calls, results, strict=False):
                 tool_msg = provider.format_tool_result(tool_call, result)
                 messages.append(tool_msg)

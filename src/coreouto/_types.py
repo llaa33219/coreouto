@@ -173,7 +173,7 @@ class Message(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     role: Literal["system", "user", "assistant", "tool"]
-    content: str | list[ContentBlock]
+    content: str | list[ContentBlock | ToolCall]
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None
     name: str | None = None
@@ -190,6 +190,7 @@ class AgentConfig(BaseModel):
     max_iterations: int = 50
     provider_config: dict[str, Any] = Field(default_factory=dict)
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
+    parallel_tool_calls: bool = False
 
 
 class Response(BaseModel):

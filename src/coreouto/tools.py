@@ -16,6 +16,7 @@ class Tool(BaseModel):
     description: str
     parameters: dict[str, Any]
     handler: Any
+    parallelizable: bool = True
 
 
 _TOOL_REGISTRY: dict[str, Tool] = {}
@@ -109,6 +110,7 @@ def extract_schema(func: Callable[..., Any]) -> dict[str, Any]:
 def register_tool(
     name: str | None = None,
     description: str | None = None,
+    parallelizable: bool = True,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         tool_name = name if name is not None else func.__name__
@@ -121,6 +123,7 @@ def register_tool(
             description=tool_description,
             parameters=schema,
             handler=func,
+            parallelizable=parallelizable,
         )
         _TOOL_REGISTRY[tool_name] = tool
 
@@ -140,6 +143,7 @@ def register_tool_class(
     *,
     handler: Callable[..., Any] | None = None,
     description: str | None = None,
+    parallelizable: bool = True,
 ) -> None:
     if handler is None:
         raise ValueError("class-based tools require explicit handler")
@@ -153,5 +157,6 @@ def register_tool_class(
         description=tool_description,
         parameters=schema,
         handler=handler,
+        parallelizable=parallelizable,
     )
     _TOOL_REGISTRY[name] = tool

@@ -5,6 +5,7 @@ from typing import Any
 
 from coreouto._types import (
     AudioBlock,
+    ContentBlock,
     DocumentBlock,
     ImageBlock,
     LLMResponse,
@@ -68,10 +69,31 @@ class AnthropicProvider:
                 continue
             if msg.role == "assistant":
                 content: list[dict[str, Any]] = []
-                if msg.content:
-                    content.append({"type": "text", "text": msg.content})
+                if isinstance(msg.content, str):
+                    if msg.content:
+                        content.append({"type": "text", "text": msg.content})
+                else:
+                    for item in msg.content:
+                        if isinstance(item, TextBlock):
+                            content.append({"type": "text", "text": item.text})
+                        elif isinstance(item, ToolCall):
+                            content.append(
+                                {
+                                    "type": "tool_use",
+                                    "id": item.id,
+                                    "name": item.name,
+                                    "input": item.arguments,
+                                }
+                            )
                 if msg.tool_calls:
+                    seen = {
+                        item.id
+                        for item in (msg.content if not isinstance(msg.content, str) else [])
+                        if isinstance(item, ToolCall)
+                    }
                     for tc in msg.tool_calls:
+                        if tc.id in seen:
+                            continue
                         content.append(
                             {
                                 "type": "tool_use",
@@ -153,9 +175,24 @@ class AnthropicProvider:
 
     def format_assistant_message(self, response: LLMResponse) -> Message:
         tool_calls = list(response.tool_calls) if response.tool_calls else None
+        if not tool_calls:
+            return Message(
+                role="assistant",
+                content=response.content or "",
+                tool_calls=None,
+            )
+        # Build a list that interleaves text and tool_use blocks in the order
+        # the model emitted them, so the next LLM call sees the same
+        # text/tool_use ordering it produced (esp. important when the model
+        # emits text -> tool_use -> text in a single turn).
+        blocks: list[ContentBlock | ToolCall] = []
+        if response.content:
+            blocks.append(TextBlock(text=response.content))
+        for tc in tool_calls:
+            blocks.append(tc)
         return Message(
             role="assistant",
-            content=response.content or "",
+            content=blocks,
             tool_calls=tool_calls,
         )
 

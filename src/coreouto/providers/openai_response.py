@@ -91,21 +91,53 @@ class OpenAIResponseProvider:
                     }
                 )
             elif msg.role == "assistant":
-                if msg.content:
-                    responses_input.append(
-                        {
-                            "type": "message",
-                            "role": "assistant",
-                            "content": [
+                if isinstance(msg.content, str):
+                    if msg.content:
+                        responses_input.append(
+                            {
+                                "type": "message",
+                                "role": "assistant",
+                                "content": [
+                                    {
+                                        "type": "output_text",
+                                        "text": msg.content,
+                                    }
+                                ],
+                            }
+                        )
+                else:
+                    for item in msg.content:
+                        if isinstance(item, TextBlock):
+                            responses_input.append(
                                 {
-                                    "type": "output_text",
-                                    "text": msg.content,
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [
+                                        {
+                                            "type": "output_text",
+                                            "text": item.text,
+                                        }
+                                    ],
                                 }
-                            ],
-                        }
-                    )
+                            )
+                        elif isinstance(item, ToolCall):
+                            responses_input.append(
+                                {
+                                    "type": "function_call",
+                                    "call_id": item.id,
+                                    "name": item.name,
+                                    "arguments": json.dumps(item.arguments),
+                                }
+                            )
                 if msg.tool_calls:
+                    seen = {
+                        item.id
+                        for item in (msg.content if not isinstance(msg.content, str) else [])
+                        if isinstance(item, ToolCall)
+                    }
                     for tc in msg.tool_calls:
+                        if tc.id in seen:
+                            continue
                         responses_input.append(
                             {
                                 "type": "function_call",

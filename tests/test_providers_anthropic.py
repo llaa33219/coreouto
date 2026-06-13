@@ -284,7 +284,9 @@ def test_format_assistant_message_with_tool_calls(provider):
     )
     msg = provider.format_assistant_message(response)
     assert msg.role == "assistant"
-    assert msg.content == "Using tool"
+    assert isinstance(msg.content, list)
+    assert msg.content[0] == TextBlock(text="Using tool")
+    assert msg.content[1] == ToolCall(id="tc1", name="t1", arguments={"a": 1})
     assert msg.tool_calls == [ToolCall(id="tc1", name="t1", arguments={"a": 1})]
 
 

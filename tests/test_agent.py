@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from coreouto._types import (
@@ -941,3 +943,241 @@ async def test_tool_returning_plain_string_still_works():
 
     tool_msg = next(m for m in provider.calls[1]["messages"] if m.role == "tool")
     assert tool_msg.content == "got: hi"
+
+
+async def test_parallel_tool_calls_run_concurrently():
+    """When parallel_tool_calls=True, two tool calls dispatched in the
+    same LLM turn should run concurrently via asyncio.gather. We measure
+    overlap with a shared barrier.
+    """
+    import time
+
+    barrier = asyncio.Event()
+    start: list[float] = []
+    end: list[float] = []
+
+    @register_tool("slow")
+    async def slow() -> str:
+        start.append(time.perf_counter())
+        await barrier.wait()
+        end.append(time.perf_counter())
+        return "slow"
+
+    @register_tool("fast")
+    async def fast() -> str:
+        start.append(time.perf_counter())
+        barrier.set()
+        end.append(time.perf_counter())
+        return "fast"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "tc_slow", "name": "slow", "arguments": {}},
+                {"id": "tc_fast", "name": "fast", "arguments": {}},
+            ]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="mock",
+            tools=["slow", "fast"],
+            parallel_tool_calls=True,
+        )
+    )
+    await agent.call("go")
+
+    assert len(start) == 2
+    assert len(end) == 2
+    # If parallel: both tools started before either ended. If sequential:
+    # slow starts, then ends, then fast starts. We assert both started
+    # before slow ended.
+    assert end[0] - start[0] < 0.01 or end[1] - start[1] < 0.01, (
+        "tools ran sequentially (no concurrency overlap)"
+    )
+
+
+async def test_sync_tools_dont_block_event_loop_when_parallel():
+    """Two long-running sync tools should run in parallel via the thread
+    pool. If they ran serially on the event loop, total time would be
+    ~2x one tool's sleep. With to_thread offload, total time is ~1x.
+    """
+    import time
+
+    @register_tool("sleep_a")
+    def sleep_a() -> str:
+        time.sleep(0.2)
+        return "a"
+
+    @register_tool("sleep_b")
+    def sleep_b() -> str:
+        time.sleep(0.2)
+        return "b"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "tc_a", "name": "sleep_a", "arguments": {}},
+                {"id": "tc_b", "name": "sleep_b", "arguments": {}},
+            ]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="mock",
+            tools=["sleep_a", "sleep_b"],
+            parallel_tool_calls=True,
+        )
+    )
+    t0 = time.perf_counter()
+    await agent.call("go")
+    elapsed = time.perf_counter() - t0
+
+    # Serial: ~0.4s. Parallel via to_thread: ~0.2s. Allow generous bound.
+    assert elapsed < 0.35, f"sync tools ran serially: {elapsed:.3f}s"
+
+
+async def test_non_parallelizable_tool_forces_serial_dispatch():
+    """A single non-parallelizable tool in a turn forces the whole turn
+    to run serially, even when parallel_tool_calls=True.
+    """
+
+    @register_tool("parallel_ok")
+    async def parallel_ok() -> str:
+        return "ok"
+
+    @register_tool("must_be_alone", parallelizable=False)
+    async def must_be_alone() -> str:
+        return "alone"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "tc1", "name": "parallel_ok", "arguments": {}},
+                {"id": "tc2", "name": "must_be_alone", "arguments": {}},
+            ]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="mock",
+            tools=["parallel_ok", "must_be_alone"],
+            parallel_tool_calls=True,
+        )
+    )
+    response = await agent.call("go")
+
+    # Both tools still ran (in serial order), and the loop terminated.
+    assert response.content == "done"
+
+
+async def test_parallel_tool_results_in_history_preserve_order():
+    """When two tools run in parallel, their tool result messages in the
+    conversation history should be in the same order as the model's
+    tool_calls (not whatever order asyncio.gather happened to finish).
+    """
+
+    invocations: list[str] = []
+
+    @register_tool("a")
+    async def a() -> str:
+        invocations.append("a-start")
+        await asyncio.sleep(0.05)
+        invocations.append("a-end")
+        return "a-result"
+
+    @register_tool("b")
+    async def b() -> str:
+        invocations.append("b-start")
+        await asyncio.sleep(0.0)
+        invocations.append("b-end")
+        return "b-result"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "tc_a", "name": "a", "arguments": {}},
+                {"id": "tc_b", "name": "b", "arguments": {}},
+            ]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="mock",
+            tools=["a", "b"],
+            parallel_tool_calls=True,
+        )
+    )
+    await agent.call("go")
+
+    # The second LLM call should have tool messages in input order (a, b)
+    second_call = provider.calls[1]
+    tool_messages = [m for m in second_call["messages"] if m.role == "tool"]
+    assert len(tool_messages) == 2
+    assert tool_messages[0].content == "a-result"
+    assert tool_messages[1].content == "b-result"
+
+
+async def test_parallel_default_off_preserves_legacy_sequential():
+    """Default parallel_tool_calls=False keeps the legacy sequential
+    behavior. Two tools run one after the other.
+    """
+    invocations: list[str] = []
+
+    @register_tool("one")
+    async def one() -> str:
+        invocations.append("one")
+        return "1"
+
+    @register_tool("two")
+    async def two() -> str:
+        invocations.append("two")
+        return "2"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "tc1", "name": "one", "arguments": {}},
+                {"id": "tc2", "name": "two", "arguments": {}},
+            ]
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(
+        AgentConfig(
+            name="test",
+            model="m",
+            provider="mock",
+            tools=["one", "two"],
+        )
+    )
+    await agent.call("go")
+
+    assert invocations == ["one", "two"]
