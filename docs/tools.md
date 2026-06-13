@@ -154,6 +154,28 @@ co.register_tool_class(
 
 The `handler` argument is required. It's the callable that gets invoked when the agent calls the tool.
 
+## Marking a tool as non-parallelizable
+
+By default every tool is considered parallelizable. If a tool must run alone (e.g. it mutates shared state, holds a session lock, or has side effects that depend on the absence of concurrent calls), mark it:
+
+```python
+@co.register_tool("write_file", parallelizable=False)
+def write_file(path: str, content: str) -> str:
+    Path(path).write_text(content)
+    return "ok"
+```
+
+```python
+co.register_tool_class(
+    "db_write",
+    DatabaseTool,
+    handler=db.write,
+    parallelizable=False,
+)
+```
+
+The agent loop honors `parallelizable=False` by falling back to serial dispatch for any turn that includes such a tool — even when `AgentConfig.parallel_tool_calls=True`. See [Agents — Parallel tool execution](agent.md#parallel-tool-execution) for the full rule.
+
 ## Listing and inspecting tools
 
 ```python

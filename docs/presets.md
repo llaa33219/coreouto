@@ -31,6 +31,7 @@ All arguments except `name`, `model`, and `provider` are optional.
 | `description`          | `str \| None`       | `None`  | Human-readable description          |
 | `provider_config`      | `dict[str, Any]`    | `{}`    | Canonical settings (see [Normalized settings](providers.md#normalized-settings)) |
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
+| `parallel_tool_calls`  | `bool`              | `False` | Forwarded to `AgentConfig`; see [Agent — Parallel tool execution](agent.md#parallel-tool-execution) |
 
 ## Using a preset
 
