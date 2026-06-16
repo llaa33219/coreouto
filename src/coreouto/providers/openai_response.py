@@ -204,10 +204,19 @@ class OpenAIResponseProvider:
                 total_tokens=prompt_tokens + completion_tokens,
             )
 
+        status = getattr(resp, "status", None) or "completed"
+        if status == "incomplete":
+            incomplete = getattr(resp, "incomplete_details", None)
+            reason = getattr(incomplete, "reason", None) if incomplete else None
+            stop_reason = f"incomplete:{reason}" if reason else "incomplete"
+        else:
+            stop_reason = "completed"
+
         return LLMResponse(
             content="".join(text_parts) if text_parts else "",
             tool_calls=tool_calls,
             usage=usage,
+            stop_reason=stop_reason,
             raw=resp,
         )
 

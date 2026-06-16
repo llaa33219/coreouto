@@ -133,6 +133,7 @@ class OpenAIProvider:
             content=content,
             tool_calls=parsed_tool_calls,
             usage=usage,
+            stop_reason=getattr(choice, "finish_reason", None),
             raw=resp,
         )
 

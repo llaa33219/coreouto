@@ -170,6 +170,7 @@ class AnthropicProvider:
             content="".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
             usage=usage,
+            stop_reason=getattr(resp, "stop_reason", None),
             raw=resp,
         )
 

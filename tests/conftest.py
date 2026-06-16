@@ -20,6 +20,7 @@ class MockLLMResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    stop_reason: str | None = "end_turn"
 
 
 class MockProvider:
@@ -75,6 +76,7 @@ class MockProvider:
                 completion_tokens=r.completion_tokens,
                 total_tokens=r.prompt_tokens + r.completion_tokens,
             ),
+            stop_reason=r.stop_reason,
             raw=r,
         )
 

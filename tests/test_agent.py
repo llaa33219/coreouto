@@ -1181,3 +1181,93 @@ async def test_parallel_default_off_preserves_legacy_sequential():
     await agent.call("go")
 
     assert invocations == ["one", "two"]
+
+
+async def test_finish_without_end_signal_does_not_return():
+    """If the model emits <finish> but the provider reports a non-clean
+    stop reason (e.g. max_tokens, stop_sequence, tool_use), the agent
+    loop must NOT return. The model's declaration alone is not enough;
+    the API must also have stopped the model cleanly.
+    """
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<finish>premature</finish>",
+            stop_reason="max_tokens",  # truncated, not a clean end
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>real</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hi")
+
+    assert response.content == "real"
+    assert len(provider.calls) == 2
+    # The reminder should have been injected on the first turn since we
+    # didn't return — that's why the mock had a second response queued.
+    user_messages = [m for m in provider.calls[1]["messages"] if m.role == "user"]
+    assert any("<finish>" in m.content for m in user_messages)
+
+
+async def test_finish_with_end_signal_returns_immediately():
+    """If both <finish> matches AND stop_reason is a clean-end signal
+    (Anthropic end_turn / OpenAI stop / Responses completed / Google STOP),
+    the loop returns on this turn.
+    """
+    for end in ("end_turn", "stop", "completed", "STOP"):
+        provider = MockProvider()
+        provider.queue(MockLLMResponse(content=f"<finish>x ({end})</finish>", stop_reason=end))
+        register_provider("mock", provider)
+        agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+        response = await agent.call("hi")
+        assert response.content == f"x ({end})", end
+        # reset for next iteration
+        from coreouto.providers import clear_providers
+        from coreouto.tools import clear_tools
+
+        clear_tools()
+        clear_providers()
+
+
+async def test_finish_with_no_stop_reason_continues_loop():
+    """If the LLMResponse has no stop_reason (e.g. an older provider or
+    a custom mock), the loop must NOT trust the <finish> alone. The
+    default behavior is to keep going so the user gets a chance to
+    continue if the model really was about to say more.
+    """
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<finish>risky</finish>",
+            stop_reason=None,
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>safe</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hi")
+
+    assert response.content == "safe"
+
+
+async def test_finish_with_tool_use_stop_continues_loop():
+    """Anthropic stop_reason='tool_use' (the model stopped to invoke a
+    tool) must not satisfy the end condition. The model's <finish> tag
+    is ignored, and the loop continues.
+    """
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="<finish>oops</finish>",
+            stop_reason="tool_use",
+        )
+    )
+    provider.queue(MockLLMResponse(content="<finish>real</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hi")
+
+    assert response.content == "real"

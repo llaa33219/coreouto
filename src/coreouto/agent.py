@@ -63,6 +63,20 @@ def _extract_final_answer(text: str) -> str | None:
     return None
 
 
+_END_SIGNALS = frozenset(
+    {
+        # Anthropic
+        "end_turn",
+        # OpenAI Chat Completions
+        "stop",
+        # OpenAI Responses (status field)
+        "completed",
+        # Google (genai)
+        "STOP",
+    }
+)
+
+
 async def _run_one_tool_call(tool_call: ToolCall, tool: Any) -> ToolResult:
     """Execute a single tool call, fire the BEFORE/AFTER hooks, return a ToolResult.
 
@@ -114,6 +128,16 @@ def _invoke_sync_handler(handler: Any, arguments: dict[str, Any]) -> Any:
     return handler(**arguments)
 
 
+def _is_end_signal(stop_reason: str | None) -> bool:
+    """Return True if the provider's stop signal says the model finished
+    its turn cleanly (vs. was cut off by max_tokens, hit a stop sequence,
+    triggered a tool call, etc.).
+    """
+    if stop_reason is None:
+        return False
+    return stop_reason in _END_SIGNALS
+
+
 def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
     """Wrap a tool handler's return value into a ToolResult.
 
@@ -131,9 +155,6 @@ def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
     ):
         return ToolResult(tool_call_id=tool_call_id, blocks=raw_result, is_error=False)
     return ToolResult(tool_call_id=tool_call_id, content=str(raw_result), is_error=False)
-
-
-_CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
 
 
 _DEFAULT_SYSTEM_PROMPT = (
@@ -273,7 +294,7 @@ class Agent:
 
             last_assistant_text = response.content or ""
             final_answer = _extract_final_answer(last_assistant_text)
-            if final_answer is not None:
+            if final_answer is not None and _is_end_signal(response.stop_reason):
                 await trigger(
                     ON_FINISH,
                     content=final_answer,

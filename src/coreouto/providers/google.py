@@ -211,10 +211,16 @@ class GoogleProvider:
                 total_tokens=prompt_tokens + completion_tokens,
             )
 
+        stop_reason = None
+        if getattr(response, "candidates", None):
+            stop_reason = getattr(response.candidates[0], "finish_reason", None)
+        stop_reason = str(stop_reason) if stop_reason is not None else None
+
         return LLMResponse(
             content="".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
             usage=usage,
+            stop_reason=stop_reason,
             raw=response,
         )
 
