@@ -256,7 +256,7 @@ class Agent:
                 )
 
             iterations += 1
-            if iterations > cfg.max_iterations:
+            if cfg.max_iterations is not None and iterations > cfg.max_iterations:
                 raise MaxIterationsError(
                     f"max_iterations ({cfg.max_iterations}) reached without a <finish> tag"
                 )

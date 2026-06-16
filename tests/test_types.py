@@ -238,7 +238,7 @@ class TestAgentConfig:
         assert cfg.provider == "openai"
         assert cfg.system_prompt is None
         assert cfg.tools == []
-        assert cfg.max_iterations == 50
+        assert cfg.max_iterations is None
 
     def test_all_fields(self) -> None:
         cfg = AgentConfig(

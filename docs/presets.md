@@ -27,7 +27,7 @@ All arguments except `name`, `model`, and `provider` are optional.
 | `provider`             | `str`               | --      | Provider key (required)             |
 | `system_prompt`        | `str \| None`       | `None`  | System message for the agent        |
 | `tools`                | `list[str]`         | `[]`    | Tool names available to the agent   |
-| `max_iterations`       | `int`               | `50`    | Max loop iterations                 |
+| `max_iterations`       | `int \| None`       | `None`  | Max loop iterations (None = unlimited)                 |
 | `description`          | `str \| None`       | `None`  | Human-readable description          |
 | `provider_config`      | `dict[str, Any]`    | `{}`    | Canonical settings (see [Normalized settings](providers.md#normalized-settings)) |
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |

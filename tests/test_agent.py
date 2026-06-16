@@ -1271,3 +1271,44 @@ async def test_finish_with_tool_use_stop_continues_loop():
     response = await agent.call("hi")
 
     assert response.content == "real"
+
+
+async def test_default_max_iterations_is_unlimited():
+    """By default max_iterations is None, which means the loop never
+    raises MaxIterationsError on iteration count alone. (Termination
+    still requires <finish> + an end signal; this just removes the
+    iteration ceiling.) The test queues a single <finish> response
+    and confirms the loop returns normally.
+    """
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hi")
+    assert response.content == "ok"
+
+
+async def test_max_iterations_explicit_none_is_unlimited():
+    """Setting max_iterations=None explicitly is the same as the default."""
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=None))
+    response = await agent.call("hi")
+    assert response.content == "ok"
+
+
+async def test_max_iterations_finite_still_raises():
+    """When max_iterations is a positive int, the loop still raises
+    MaxIterationsError after that many iterations without termination.
+    """
+    provider = MockProvider()
+    for _ in range(5):
+        provider.queue(MockLLMResponse(content="still going"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=3))
+    with pytest.raises(MaxIterationsError, match=r"max_iterations \(3\) reached"):
+        await agent.call("hi")

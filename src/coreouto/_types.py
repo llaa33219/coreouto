@@ -188,7 +188,7 @@ class AgentConfig(BaseModel):
     provider: str
     system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list)
-    max_iterations: int = 50
+    max_iterations: int | None = None
     provider_config: dict[str, Any] = Field(default_factory=dict)
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
     parallel_tool_calls: bool = False

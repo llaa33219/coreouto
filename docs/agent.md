@@ -37,7 +37,7 @@ agent = co.Agent(config)
 | `provider`             | `str`               | --      | Key of a registered provider             |
 | `system_prompt`        | `str \| None`       | `None`  | System message prepended to the conversation |
 | `tools`                | `list[str]`         | `[]`    | Names of registered tools available to this agent |
-| `max_iterations`       | `int`               | `50`    | Max loop iterations before raising `MaxIterationsError` |
+| `max_iterations`       | `int \| None`       | `None`  | Max loop iterations before raising `MaxIterationsError`; `None` = unlimited (default) |
 | `provider_config`      | `dict[str, Any]`    | `{}`    | Canonical settings (see [Normalized settings](providers.md#normalized-settings)); translated to provider-specific kwargs |
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
@@ -178,7 +178,7 @@ Each `Usage` entry has `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 
 ## `MaxIterationsError`
 
-If the agent loops more than `max_iterations` times without producing a `<finish>...</finish>` tag, it raises `MaxIterationsError`:
+By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the model emits `<finish>` together with a clean end signal (see [How the loop works](#how-the-loop-works)). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without termination:
 
 ```python
 try:
@@ -187,15 +187,13 @@ except co.MaxIterationsError as e:
     print(f"Agent didn't finish: {e}")
 ```
 
-Increase `max_iterations` in the config if your tasks need more steps:
-
 ```python
-preset = co.register_agent_preset(
-    "deep-researcher",
+config = co.AgentConfig(
+    name="deep-researcher",
     model="claude-opus-4-8",
     provider="anthropic",
     tools=["search"],
-    max_iterations=200,
+    max_iterations=200,  # cap the loop
 )
 ```
 
@@ -203,10 +201,10 @@ preset = co.register_agent_preset(
 
 1. Build the message list: system prompt (default or configured) + history (if any) + user message.
 2. Call the LLM via the registered provider.
-3. If the response's `content` contains `<finish>...</finish>` tags, extract the inner text and return a `Response`.
+3. If the response's `content` contains `<finish>...</finish>` tags **and** the provider's stop signal says the model finished cleanly (`end_turn` / `stop` / `completed` / `STOP`), extract the inner text and return a `Response`.
 4. If the response has tool calls, execute each one, append the results to the message list, and go to step 2.
 5. If the response has neither a `<finish>` tag nor tool calls, inject a reminder user message and go to step 2.
-6. If `max_iterations` is exceeded, raise `MaxIterationsError`.
+6. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
 
 ## Hooks during the loop
 
