@@ -193,6 +193,15 @@ class AgentConfig(BaseModel):
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
     parallel_tool_calls: bool = False
 
+    @model_validator(mode="after")
+    def _finish_not_user_tool(self) -> AgentConfig:
+        if "finish" in self.tools:
+            raise ValueError(
+                "'finish' is a reserved tool name injected automatically by the agent "
+                "loop. Remove it from `tools` and call the `finish` tool to terminate."
+            )
+        return self
+
 
 class Response(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -201,5 +210,12 @@ class Response(BaseModel):
     messages: list[Message]
     iterations: int
     usage: list[Usage] = Field(default_factory=list)
-    finish_called: bool = True
+    finish_called: bool = Field(
+        default=True,
+        description=(
+            "Always True on normal completion because the only success path is a "
+            "finish tool call. MaxIterationsError is the only non-success exit and "
+            "it raises instead of returning a Response."
+        ),
+    )
     warnings: list[str] = Field(default_factory=list)

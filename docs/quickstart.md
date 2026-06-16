@@ -37,20 +37,29 @@ co.register_provider("zhipu", OpenAIProvider(
 For testing without API keys, you can use a mock provider:
 
 ```python
-from coreouto._types import LLMResponse, Message, Usage
+from coreouto._types import LLMResponse, Message, ToolCall, Usage
 
 class MockProvider:
     """Returns a canned response on every call."""
 
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            content="Fusion energy made significant progress in 2025.",
-            tool_calls=[],
+            tool_calls=[
+                ToolCall(
+                    id="finish_1",
+                    name="finish",
+                    arguments={"content": "Fusion energy made significant progress in 2025."},
+                ),
+            ],
             usage=Usage(prompt_tokens=10, completion_tokens=8, total_tokens=18),
         )
 
     def format_assistant_message(self, response):
-        return Message(role="assistant", content=response.content or "")
+        return Message(
+            role="assistant",
+            content=response.content or "",
+            tool_calls=response.tool_calls if response.tool_calls else None,
+        )
 
     def format_tool_result(self, tool_call, result):
         return Message(role="tool", content=str(result.content), tool_call_id=tool_call.id, name=tool_call.name)
@@ -113,7 +122,7 @@ Here's the whole thing in one file, using a mock provider:
 
 ```python
 import coreouto as co
-from coreouto._types import LLMResponse, Message, Usage
+from coreouto._types import LLMResponse, Message, ToolCall, Usage
 
 
 class MockProvider:
@@ -121,13 +130,22 @@ class MockProvider:
 
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            content="Fusion energy saw major breakthroughs in 2025.",
-            tool_calls=[],
+            tool_calls=[
+                ToolCall(
+                    id="finish_1",
+                    name="finish",
+                    arguments={"content": "Fusion energy saw major breakthroughs in 2025."},
+                ),
+            ],
             usage=Usage(prompt_tokens=10, completion_tokens=8, total_tokens=18),
         )
 
     def format_assistant_message(self, response):
-        return Message(role="assistant", content=response.content or "")
+        return Message(
+            role="assistant",
+            content=response.content or "",
+            tool_calls=response.tool_calls if response.tool_calls else None,
+        )
 
     def format_tool_result(self, tool_call, result):
         return Message(

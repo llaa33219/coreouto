@@ -263,7 +263,7 @@ class MyProvider:
 ### Full example: a mock provider for testing
 
 ```python
-from coreouto._types import LLMResponse, Message, Usage
+from coreouto._types import LLMResponse, Message, ToolCall, Usage
 
 
 class MockProvider:
@@ -274,13 +274,22 @@ class MockProvider:
 
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            content=self._response_text,
-            tool_calls=[],
+            tool_calls=[
+                ToolCall(
+                    id="finish_1",
+                    name="finish",
+                    arguments={"content": self._response_text},
+                ),
+            ],
             usage=Usage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
         )
 
     def format_assistant_message(self, response):
-        return Message(role="assistant", content=response.content or "")
+        return Message(
+            role="assistant",
+            content=response.content or "",
+            tool_calls=response.tool_calls if response.tool_calls else None,
+        )
 
     def format_tool_result(self, tool_call, result):
         return Message(

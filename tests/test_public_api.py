@@ -19,6 +19,7 @@ _EXPECTED_NAMES = [
     "ON_FINISH",
     "ON_ITERATION",
     "ON_USER_INJECTION",
+    "RESERVED_TOOL_NAMES",
     "Response",
     "TextBlock",
     "Tool",

@@ -49,6 +49,7 @@ from coreouto.providers import (
 from coreouto.settings import CANONICAL_SETTINGS, normalize_provider_config
 from coreouto.sync import call_sync
 from coreouto.tools import (
+    RESERVED_TOOL_NAMES,
     Tool,
     clear_tools,
     get_tool,
@@ -66,6 +67,7 @@ __all__ = [
     "ON_FINISH",
     "ON_ITERATION",
     "ON_USER_INJECTION",
+    "RESERVED_TOOL_NAMES",
     "Agent",
     "AgentConfig",
     "AgentPreset",

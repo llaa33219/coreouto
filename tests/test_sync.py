@@ -25,7 +25,11 @@ def _clean_state():
 
 def test_call_sync_returns_same_response_as_async():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(content="<finish>done</finish>"))
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {"content": "done"}}]
+        )
+    )
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=10))
@@ -94,7 +98,17 @@ def test_call_sync_propagates_keyerror_for_missing_provider():
 def test_call_sync_multiple_sequential_calls():
     provider = MockProvider()
     for i in range(3):
-        provider.queue(MockLLMResponse(content=f"<finish>done{i}</finish>"))
+        provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {
+                        "id": "finish_1",
+                        "name": "finish",
+                        "arguments": {"content": f"done{i}"},
+                    }
+                ]
+            )
+        )
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=10))

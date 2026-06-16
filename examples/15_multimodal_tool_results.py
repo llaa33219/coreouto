@@ -92,8 +92,8 @@ async def main() -> None:
         system_prompt=(
             "You are a research analyst. When tools return images, "
             "DOCUMENTS, or other media, look at them and incorporate the "
-            "information into your answer. Wrap your final response in "
-            "<finish>...</finish> tags."
+            "information into your answer. Call the `finish` tool when you "
+            "are done."
         ),
         tools=["screenshot_website", "fetch_pdf_report", "classify_chart"],
     )

@@ -8,6 +8,8 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 
+RESERVED_TOOL_NAMES = frozenset({"finish"})
+
 
 class Tool(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -107,6 +109,14 @@ def extract_schema(func: Callable[..., Any]) -> dict[str, Any]:
     }
 
 
+def _assert_not_reserved(name: str) -> None:
+    if name in RESERVED_TOOL_NAMES:
+        raise ValueError(
+            f"{name!r} is a reserved tool name injected automatically by the agent loop. "
+            f"Use the built-in to terminate the run; do not register a user tool with this name."
+        )
+
+
 def register_tool(
     name: str | None = None,
     description: str | None = None,
@@ -116,6 +126,7 @@ def register_tool(
         tool_name = name if name is not None else func.__name__
         tool_description = description if description is not None else (func.__doc__ or "").strip()
 
+        _assert_not_reserved(tool_name)
         schema = extract_schema(func)
 
         tool = Tool(
@@ -147,6 +158,8 @@ def register_tool_class(
 ) -> None:
     if handler is None:
         raise ValueError("class-based tools require explicit handler")
+
+    _assert_not_reserved(name)
 
     tool_description = description if description is not None else (cls.__doc__ or "").strip()
 

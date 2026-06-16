@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import re
 from typing import Any
 
 from coreouto._types import (
@@ -30,50 +29,57 @@ from coreouto.hooks import (
 )
 from coreouto.providers import get_provider
 from coreouto.settings import normalize_provider_config
-from coreouto.tools import get_tool
+from coreouto.tools import Tool, get_tool
 
-_FINISH_RE = re.compile(r"<finish>(.*?)</finish>", re.DOTALL)
-_THINK_OPEN_RE = re.compile(r"<think>")
-_THINK_CLOSE_RE = re.compile(r"</think>")
+FINISH_TOOL_NAME = "finish"
 _FINISH_REMINDER = (
-    "Reminder: wrap your final answer in <finish>...</finish> tags so I can return it."
+    "Reminder: when you are done, call the `finish` tool with your final answer in the "
+    "`content` argument. Example: finish(content='Paris is the capital of France.')."
 )
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
 
 
-def _extract_final_answer(text: str) -> str | None:
-    """Return the contents of the first `<finish>...</finish>` block that is
-    NOT inside a `<think>...</think>` region, or None if there is no such match.
-    """
-    think_spans: list[tuple[int, int]] = []
-    cursor = 0
-    for open_match in _THINK_OPEN_RE.finditer(text):
-        if open_match.start() < cursor:
-            continue
-        close_match = _THINK_CLOSE_RE.search(text, open_match.end())
-        if close_match is None:
-            think_spans.append((open_match.start(), len(text)))
-            break
-        think_spans.append((open_match.start(), close_match.end()))
-        cursor = close_match.end()
-    for match in _FINISH_RE.finditer(text):
-        inside = any(start <= match.start() < end for start, end in think_spans)
-        if not inside:
-            return match.group(1).strip()
-    return None
+_FINISH_TOOL = Tool(
+    name=FINISH_TOOL_NAME,
+    description=(
+        "Signal that the task is complete and return the final answer to the user. "
+        "Pass the user-facing answer in the `content` argument."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "content": {
+                "type": "string",
+                "description": ("The final user-facing answer. Omit for an empty response."),
+            },
+        },
+        "required": [],
+    },
+    handler=lambda content="": content,
+    parallelizable=True,
+)
 
 
-_END_SIGNALS = frozenset(
-    {
-        # Anthropic
-        "end_turn",
-        # OpenAI Chat Completions
-        "stop",
-        # OpenAI Responses (status field)
-        "completed",
-        # Google (genai)
-        "STOP",
-    }
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are an agent. You can use tools to gather information. When the task is fully "
+    "complete and you have a self-contained answer for the user, signal completion by "
+    "calling the `finish` tool with your final answer in the `content` argument.\n\n"
+    "Rules:\n"
+    "  - Call `finish` only when the work is fully complete and you are returning the "
+    "final answer to the user. Once you call `finish`, the loop ends and your answer is "
+    "delivered.\n"
+    "  - Do NOT call `finish` if you still intend to call more tools, refine your "
+    "answer, or continue working. Do NOT call it for intermediate summaries, partial "
+    "progress, or thinking aloud.\n"
+    "  - If you respond with text but no `finish` tool call (and no other tool calls), "
+    "the loop will inject a reminder asking you to call `finish`.\n"
+    "  - If you call `finish` together with other tool calls in the same turn, the other "
+    "tools will still execute; the `finish` content will only be returned on a clean "
+    "subsequent turn.\n\n"
+    "Example:\n"
+    "User: What is the capital of France?\n"
+    "You: I'll answer from general knowledge. <finish tool call with content='Paris is "
+    "the capital of France.'>\n"
 )
 
 
@@ -103,8 +109,6 @@ async def _run_one_tool_call(tool_call: ToolCall, tool: Any) -> ToolResult:
             if inspect.iscoroutinefunction(tool.handler):
                 raw_result = await tool.handler(**tool_call.arguments)
             else:
-                # Sync handler — offload to a worker thread so it doesn't block
-                # the event loop when invoked concurrently with other tools.
                 raw_result = await asyncio.to_thread(
                     _invoke_sync_handler, tool.handler, tool_call.arguments
                 )
@@ -128,16 +132,6 @@ def _invoke_sync_handler(handler: Any, arguments: dict[str, Any]) -> Any:
     return handler(**arguments)
 
 
-def _is_end_signal(stop_reason: str | None) -> bool:
-    """Return True if the provider's stop signal says the model finished
-    its turn cleanly (vs. was cut off by max_tokens, hit a stop sequence,
-    triggered a tool call, etc.).
-    """
-    if stop_reason is None:
-        return False
-    return stop_reason in _END_SIGNALS
-
-
 def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
     """Wrap a tool handler's return value into a ToolResult.
 
@@ -155,32 +149,6 @@ def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
     ):
         return ToolResult(tool_call_id=tool_call_id, blocks=raw_result, is_error=False)
     return ToolResult(tool_call_id=tool_call_id, content=str(raw_result), is_error=False)
-
-
-_DEFAULT_SYSTEM_PROMPT = (
-    "You are an agent. Use tools to gather information, then return your final answer to the user.\n\n"
-    "Wrap your final user-facing answer in <finish>...</finish> tags. The text inside the tags is what "
-    "the user will see.\n\n"
-    "Use <finish> ONLY when the work is fully complete and you are returning the final answer to the "
-    "user. Once you emit <finish>, the loop stops and your answer is delivered. Do not emit <finish> "
-    "if you still intend to call tools, refine your answer, or continue working. Do not emit it for "
-    "intermediate summaries or partial progress. Do not emit it as a literal example, header, or "
-    "label in the body of your text. The agent loop extracts the FIRST match, so any extra or premature "
-    "occurrence can hijack the return value and end the run before you intended.\n\n"
-    "Do NOT emit <finish> when:\n"
-    "  - you still want to call one or more tools in this turn or in a follow-up turn\n"
-    "  - your work is partial, or you are describing what you would do next\n"
-    "  - you are thinking aloud, summarizing progress, or showing intermediate steps\n"
-    "  - you are showing the user an example of the syntax (use a code block or backticks instead)\n\n"
-    "DO emit <finish> when:\n"
-    "  - you have gathered everything you need and have a complete, self-contained answer for the user\n"
-    "  - the user's task is done and you have nothing more to add\n\n"
-    "Example:\n"
-    "User: What is the capital of France?\n"
-    "You: The capital of France is Paris.\n"
-    "<finish>Paris is the capital of France.</finish>\n\n"
-    "If you respond with text but no <finish> tags, the loop will continue and you'll be asked to retry."
-)
 
 
 class MaxIterationsError(Exception):
@@ -224,12 +192,14 @@ class Agent:
         cfg = override or self.config
         provider = get_provider(cfg.provider)
 
-        resolved_tools: list[Any] = []
+        resolved_tools: list[Tool] = []
         for name in cfg.tools:
             tool = get_tool(name)
             if tool is None:
                 raise KeyError(f"tool not registered: {name!r}")
             resolved_tools.append(tool)
+
+        effective_tools: list[Tool] = [*resolved_tools, _FINISH_TOOL]
 
         messages: list[Message] = []
         if cfg.system_prompt:
@@ -258,14 +228,15 @@ class Agent:
             iterations += 1
             if cfg.max_iterations is not None and iterations > cfg.max_iterations:
                 raise MaxIterationsError(
-                    f"max_iterations ({cfg.max_iterations}) reached without a <finish> tag"
+                    f"max_iterations ({cfg.max_iterations}) reached without a "
+                    f"`{FINISH_TOOL_NAME}` tool call"
                 )
 
             await trigger(
                 BEFORE_LLM_CALL,
                 messages=messages,
                 model=cfg.model,
-                tools=resolved_tools,
+                tools=effective_tools,
             )
 
             normalized = normalize_provider_config(cfg.provider, cfg.provider_config)
@@ -273,7 +244,7 @@ class Agent:
             response = await provider.create(
                 messages=messages,
                 model=cfg.model,
-                tools=resolved_tools,
+                tools=effective_tools,
                 system_prompt=None,
                 **merged,
             )
@@ -292,15 +263,25 @@ class Agent:
                 response=response,
             )
 
-            last_assistant_text = response.content or ""
-            final_answer = _extract_final_answer(last_assistant_text)
-            if final_answer is not None and _is_end_signal(response.stop_reason):
+            tool_calls = list(response.tool_calls)
+            finish_call: ToolCall | None = next(
+                (tc for tc in tool_calls if tc.name == FINISH_TOOL_NAME),
+                None,
+            )
+            other_calls: list[ToolCall] = [tc for tc in tool_calls if tc.name != FINISH_TOOL_NAME]
+
+            if finish_call is not None and not other_calls:
+                content_value = finish_call.arguments.get("content", "")
+                if content_value is None:
+                    content_value = ""
+                final_answer = str(content_value)
+
                 await trigger(
                     ON_FINISH,
                     content=final_answer,
-                    raw_content=last_assistant_text,
                     messages=messages,
                     iterations=iterations,
+                    tool_call_id=finish_call.id,
                 )
                 return Response(
                     content=final_answer,
@@ -310,17 +291,16 @@ class Agent:
                     finish_called=True,
                 )
 
-            if not response.tool_calls:
+            if not tool_calls:
                 messages.append(Message(role="user", content=_FINISH_REMINDER))
                 continue
 
-            tool_calls = list(response.tool_calls)
-            resolved = [(tc, get_tool(tc.name)) for tc in tool_calls]
+            resolved = [(tc, get_tool(tc.name)) for tc in other_calls]
             all_parallelizable = cfg.parallel_tool_calls and all(
                 tool is not None and tool.parallelizable for _, tool in resolved
             )
 
-            if all_parallelizable and len(tool_calls) > 1:
+            if all_parallelizable and len(other_calls) > 1:
                 results = await asyncio.gather(
                     *(_run_one_tool_call(tc, tool) for tc, tool in resolved)
                 )
@@ -329,6 +309,6 @@ class Agent:
                 for tc, tool in resolved:
                     results.append(await _run_one_tool_call(tc, tool))
 
-            for tool_call, result in zip(tool_calls, results, strict=False):
+            for tool_call, result in zip(other_calls, results, strict=False):
                 tool_msg = provider.format_tool_result(tool_call, result)
                 messages.append(tool_msg)

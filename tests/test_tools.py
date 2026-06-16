@@ -113,6 +113,13 @@ class TestRegisterTool:
         decorated = register_tool("orig")(orig)
         assert decorated is orig
 
+    def test_register_tool_finish_name_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"'finish' is a reserved tool name"):
+
+            @register_tool("finish")
+            def finish_tool(x: int) -> int:
+                return x
+
 
 class TestRegisterToolClass:
     def test_with_explicit_handler(self) -> None:
@@ -134,6 +141,14 @@ class TestRegisterToolClass:
 
         with pytest.raises(ValueError, match="class-based tools require explicit handler"):
             register_tool_class("bad", MyClass)
+
+    def test_register_tool_class_finish_name_raises(self) -> None:
+        class MyClass:
+            def method(self, value: int) -> int:
+                return value * 2
+
+        with pytest.raises(ValueError, match=r"'finish' is a reserved tool name"):
+            register_tool_class("finish", MyClass, handler=MyClass().method)
 
 
 class TestRegistry:

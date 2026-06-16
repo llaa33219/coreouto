@@ -2,9 +2,9 @@
 
 Implements the 3-method Provider protocol with a tiny in-process
 "echo" provider. It always responds with the last user message prefixed
-by "echo: " wrapped in <finish>...</finish> tags. No API key, no
-network, no SDK — useful for smoke tests, local development, and
-demonstrating how a new provider integrates with the loop.
+by "echo: " via a `finish` tool call. No API key, no network, no SDK —
+useful for smoke tests, local development, and demonstrating how a new
+provider integrates with the loop.
 
 The protocol is duck-typed (Protocol with @runtime_checkable), so the
 class does not need to inherit from anything; it just needs the three
@@ -23,6 +23,7 @@ from coreouto._types import (
     AgentConfig,
     LLMResponse,
     Message,
+    ToolCall,
     Usage,
 )
 
@@ -42,8 +43,13 @@ class MyEchoProvider:
             "",
         )
         return LLMResponse(
-            content=f"<finish>echo: {last_user}</finish>",
-            tool_calls=[],
+            tool_calls=[
+                ToolCall(
+                    id="finish_1",
+                    name="finish",
+                    arguments={"content": f"echo: {last_user}"},
+                ),
+            ],
             usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
         )
 

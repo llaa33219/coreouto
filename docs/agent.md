@@ -1,6 +1,6 @@
 # Agent
 
-The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model wraps its final answer in `<finish>...</finish>` tags.
+The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model calls the built-in `finish` tool with its final answer.
 
 ## Creating an agent
 
@@ -42,7 +42,7 @@ agent = co.Agent(config)
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
 
-If `system_prompt` is `None`, a default system prompt is injected automatically explaining the `<finish>...</finish>` termination protocol.
+If `system_prompt` is `None`, a default system prompt is injected automatically explaining the `finish` tool termination protocol.
 
 ## Calling the agent
 
@@ -168,17 +168,17 @@ If you need a concurrency cap, write a hook on `BEFORE_TOOL_CALL` that records s
 
 | Field            | Type              | Description                                          |
 |------------------|-------------------|------------------------------------------------------|
-| `content`        | `str`             | The final text extracted from `<finish>...</finish>` tags |
+| `content`        | `str`             | The final text extracted from the `finish` tool call's `content` argument |
 | `messages`       | `list[Message]`   | Full message history (system, user, assistant, tool) |
 | `iterations`     | `int`             | How many LLM calls were made                         |
 | `usage`          | `list[Usage]`     | Token usage per LLM call                             |
-| `finish_called`  | `bool`            | Always `True` when the agent finishes normally       |
+| `finish_called`  | `bool`            | Always `True` on normal completion because the only success path is a `finish` tool call |
 
 Each `Usage` entry has `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 
 ## `MaxIterationsError`
 
-By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the model emits `<finish>` together with a clean end signal (see [How the loop works](#how-the-loop-works)). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without termination:
+By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the model calls the `finish` tool (see [How the loop works](#how-the-loop-works)). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without a `finish` tool call:
 
 ```python
 try:
@@ -201,10 +201,14 @@ config = co.AgentConfig(
 
 1. Build the message list: system prompt (default or configured) + history (if any) + user message.
 2. Call the LLM via the registered provider.
-3. If the response's `content` contains `<finish>...</finish>` tags **and** the provider's stop signal says the model finished cleanly (`end_turn` / `stop` / `completed` / `STOP`), extract the inner text and return a `Response`.
-4. If the response has tool calls, execute each one, append the results to the message list, and go to step 2.
-5. If the response has neither a `<finish>` tag nor tool calls, inject a reminder user message and go to step 2.
-6. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
+3. Inspect `response.tool_calls`:
+   - If any tool call has `name == "finish"`, extract the `content` argument from the first such call and return a `Response`.
+   - If a `finish` call appears alongside other tool calls, execute only the other calls, append their results, and continue. The `finish` content will be returned on a clean subsequent turn.
+   - If the response has no tool calls at all (just text), inject a reminder user message and continue.
+4. If there are non-`finish` tool calls, execute each one, append the results to the message list, and go to step 2.
+5. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
+
+> **Mixed-turn behavior.** When the model calls `finish` together with other tools in the same turn, coreouto executes the other tools first and asks the LLM again rather than returning the `finish` content immediately. This keeps tool results in the conversation and avoids dropping unfinished work.
 
 ## Hooks during the loop
 
@@ -215,10 +219,10 @@ Six hook events fire during the loop. See [Hooks](hooks.md) for details:
 - `before_tool_call` -- before each tool execution
 - `after_tool_call` -- after each tool result
 - `on_iteration` -- at the end of each iteration
-- `on_finish` -- when the agent detects `<finish>...</finish>` tags
+- `on_finish` -- when the model calls the `finish` tool
 - `on_user_injection` -- when a user message is injected via `Agent.inject_user_message`
 
-## Provider config and the `<finish>` reminder
+## Provider config and the `finish` reminder
 
 ### `provider_config`
 
@@ -235,16 +239,16 @@ config = co.AgentConfig(
 )
 ```
 
-### Missing `<finish>` tag reminder
+### Missing `finish` tool call reminder
 
-Sometimes a model returns plain text without wrapping it in `<finish>...</finish>` tags. The agent handles this gracefully by injecting a user message that reminds the model to use the tags, then continues the loop. This prevents the agent from silently losing output when the model forgets the termination protocol.
+Sometimes a model returns plain text without calling the `finish` tool. The agent handles this gracefully by injecting a user message that reminds the model to call the `finish` tool, then continues the loop. This prevents the agent from silently losing output when the model forgets the termination protocol.
 
 ### Tracking finish events with hooks
 
 ```python
 import coreouto as co
 
-def log_finish(*, content, raw_content, messages, iterations, **kwargs):
+def log_finish(*, content, messages, iterations, tool_call_id, **kwargs):
     print(f"Agent finished after {iterations} iterations with: {content}")
 
 co.register_hook(co.ON_FINISH, log_finish)

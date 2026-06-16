@@ -131,7 +131,17 @@ class TestAgentAsToolHandler:
     async def test_handler_returns_agent_final_content(self) -> None:
         _register_simple_preset()
         provider = _register_mock_provider()
-        provider.queue(MockLLMResponse(content="<finish>research result</finish>"))
+        provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {
+                        "id": "finish_1",
+                        "name": "finish",
+                        "arguments": {"content": "research result"},
+                    }
+                ]
+            )
+        )
 
         tool = agent_as_tool("researcher")
         result = await tool.handler(task="find X")
@@ -141,7 +151,11 @@ class TestAgentAsToolHandler:
     async def test_handler_passes_task_as_user_message(self) -> None:
         _register_simple_preset()
         provider = _register_mock_provider()
-        provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+        provider.queue(
+            MockLLMResponse(
+                tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {"content": "ok"}}]
+            )
+        )
 
         tool = agent_as_tool("researcher")
         await tool.handler(task="find fusion energy news")
@@ -156,7 +170,13 @@ class TestAgentAsToolHandler:
             provider="mock",
         )
         provider = _register_mock_provider()
-        provider.queue(MockLLMResponse(content="<finish>drafted</finish>"))
+        provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "drafted"}}
+                ]
+            )
+        )
 
         tool = agent_as_tool("writer")
         await tool.handler(task="write a poem")
@@ -171,7 +191,11 @@ class TestAgentAsToolHandler:
             system_prompt="be concise",
         )
         provider = _register_mock_provider()
-        provider.queue(MockLLMResponse(content="<finish>ok</finish>"))
+        provider.queue(
+            MockLLMResponse(
+                tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {"content": "ok"}}]
+            )
+        )
 
         tool = agent_as_tool("researcher")
         await tool.handler(task="hi")
@@ -210,19 +234,27 @@ class TestAgentAsToolIndependence:
     async def test_handlers_have_independent_state(self) -> None:
         _register_simple_preset()
 
-        def _queue_two_terminating_responses(provider: MockProvider) -> None:
-            provider.queue(MockLLMResponse(content="<finish>first</finish>"))
-            provider.queue(MockLLMResponse(content="<finish>second</finish>"))
-
         provider1 = MockProvider()
-        provider1.queue(MockLLMResponse(content="<finish>from-a</finish>"))
+        provider1.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "from-a"}}
+                ]
+            )
+        )
         register_provider("mock", provider1)
 
         tool1 = agent_as_tool("researcher")
         result1 = await tool1.handler(task="a")
 
         provider2 = MockProvider()
-        provider2.queue(MockLLMResponse(content="<finish>from-b</finish>"))
+        provider2.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "from-b"}}
+                ]
+            )
+        )
         register_provider("mock", provider2)
 
         tool2 = agent_as_tool("researcher")
@@ -316,11 +348,23 @@ class TestMakeDelegateTool:
         register_agent_preset("bob", model="bob-model", provider="bob_prov")
 
         alice_provider = MockProvider()
-        alice_provider.queue(MockLLMResponse(content="<finish>alice says hi</finish>"))
+        alice_provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "alice says hi"}}
+                ]
+            )
+        )
         register_provider("alice_prov", alice_provider)
 
         bob_provider = MockProvider()
-        bob_provider.queue(MockLLMResponse(content="<finish>bob says hi</finish>"))
+        bob_provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "bob says hi"}}
+                ]
+            )
+        )
         register_provider("bob_prov", bob_provider)
 
         tool = make_delegate_tool()
@@ -335,11 +379,23 @@ class TestMakeDelegateTool:
         register_agent_preset("bob", model="bob-model", provider="bob_prov")
 
         alice_provider = MockProvider()
-        alice_provider.queue(MockLLMResponse(content="<finish>alice reply</finish>"))
+        alice_provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "alice reply"}}
+                ]
+            )
+        )
         register_provider("alice_prov", alice_provider)
 
         bob_provider = MockProvider()
-        bob_provider.queue(MockLLMResponse(content="<finish>bob reply</finish>"))
+        bob_provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "bob reply"}}
+                ]
+            )
+        )
         register_provider("bob_prov", bob_provider)
 
         tool = make_delegate_tool()
@@ -367,7 +423,13 @@ class TestMakeDelegateTool:
     async def test_returns_string_not_response(self) -> None:
         register_agent_preset("alice", model="m", provider="mock")
         provider = _register_mock_provider()
-        provider.queue(MockLLMResponse(content="<finish>string reply</finish>"))
+        provider.queue(
+            MockLLMResponse(
+                tool_calls=[
+                    {"id": "finish_1", "name": "finish", "arguments": {"content": "string reply"}}
+                ]
+            )
+        )
 
         tool = make_delegate_tool()
         result = await tool.handler(agent_name="alice", message="hi")

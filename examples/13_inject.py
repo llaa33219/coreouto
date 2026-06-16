@@ -18,15 +18,20 @@ Use cases:
 import asyncio
 
 import coreouto as co
-from coreouto._types import LLMResponse, Message, Usage
+from coreouto._types import LLMResponse, Message, ToolCall, Usage
 
 
 class MockOpenAI:
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         last_user = next((m for m in reversed(messages) if m.role == "user"), None)
         return LLMResponse(
-            content=f"<finish>echo: {last_user.content if last_user else '?'}</finish>",
-            tool_calls=[],
+            tool_calls=[
+                ToolCall(
+                    id="finish_1",
+                    name="finish",
+                    arguments={"content": f"echo: {last_user.content if last_user else '?'}"},
+                ),
+            ],
             usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
         )
 
@@ -51,7 +56,7 @@ async def pattern_inject_from_hook():
     co.clear_hooks()
     co.register_provider("mock", MockOpenAI())
 
-    def interrupt_on_finish(content, **_):
+    def interrupt_on_finish(*, content, tool_call_id, **_):
         if "bad" in (content or "").lower():
             agent.inject_user_message("Please revise to be more positive.")
 

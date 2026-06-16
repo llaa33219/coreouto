@@ -32,19 +32,19 @@ async def main() -> None:
         "researcher",
         model="gpt-5.5",
         provider="openai-response",
-        system_prompt="You research topics thoroughly. Wrap your final response in <finish>...</finish> tags.",
+        system_prompt="You research topics thoroughly. Call the `finish` tool when you are done.",
     )
     co.register_agent_preset(
         "writer",
         model="gpt-5.5",
         provider="openai-response",
-        system_prompt="You write clear, concise summaries. Wrap your final response in <finish>...</finish> tags.",
+        system_prompt="You write clear, concise summaries. Call the `finish` tool when you are done.",
     )
     co.register_agent_preset(
         "critic",
         model="gpt-5.5",
         provider="openai-response",
-        system_prompt="You review text for accuracy and clarity. Wrap your final response in <finish>...</finish> tags.",
+        system_prompt="You review text for accuracy and clarity. Call the `finish` tool when you are done.",
     )
 
     dispatcher = co.make_delegate_tool()
@@ -61,7 +61,7 @@ async def main() -> None:
         system_prompt=(
             "You coordinate work between agents. Use `call_agent` to delegate. "
             "Pass agent_name (researcher, writer, or critic) and a message. "
-            "Wrap your final result in <finish>...</finish> tags when done."
+            "Call the `finish` tool when you are done."
         ),
         tools=["call_agent"],
     )

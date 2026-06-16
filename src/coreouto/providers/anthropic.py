@@ -157,8 +157,7 @@ class AnthropicProvider:
                     )
                 )
             # `thinking` blocks (extended thinking) are deliberately skipped:
-            # they hold the model's internal reasoning, not user-facing text,
-            # and any <finish> markers inside them must NOT terminate the loop.
+            # they hold the model's internal reasoning, not user-facing text.
 
         usage = Usage(
             prompt_tokens=resp.usage.input_tokens,

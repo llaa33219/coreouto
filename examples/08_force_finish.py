@@ -1,13 +1,13 @@
-"""Example 08: Missing-<finish> reminder.
+"""Example 08: Missing-`finish`-tool reminder.
 
-When the model returns text without <finish>...</finish> tags, the agent
-injects a user message reminding the model to wrap its final answer in
-tags, then continues the loop.
+When the model returns text without calling the `finish` tool, the agent
+injects a user message reminding the model to call the `finish` tool,
+then continues the loop.
 
 This example uses a mock provider to demonstrate the two-turn flow:
-  1. The model returns plain text (no <finish> tag).
+  1. The model returns plain text (no `finish` tool call).
   2. The agent appends a reminder and calls the LLM again.
-  3. The model returns text wrapped in <finish>...</finish> tags.
+  3. The model returns a `finish` tool call.
   4. The agent terminates and returns the extracted answer.
 
 Run with:
@@ -19,11 +19,11 @@ from __future__ import annotations
 import asyncio
 
 import coreouto as co
-from coreouto._types import AgentConfig, LLMResponse, Message, Usage
+from coreouto._types import AgentConfig, LLMResponse, Message, ToolCall, Usage
 
 
 class MockProvider:
-    """Provider that first returns plain text, then returns a <finish> tag."""
+    """Provider that first returns plain text, then returns a `finish` tool call."""
 
     def __init__(self):
         self._turn = 0
@@ -37,8 +37,13 @@ class MockProvider:
                 usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
             )
         return LLMResponse(
-            content="<finish>Hello!</finish>",
-            tool_calls=[],
+            tool_calls=[
+                ToolCall(
+                    id="finish_1",
+                    name="finish",
+                    arguments={"content": "Hello!"},
+                ),
+            ],
             usage=Usage(prompt_tokens=2, completion_tokens=2, total_tokens=4),
         )
 

@@ -11,12 +11,12 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `before_tool_call` | Before each tool executes            | `name`, `arguments`                                    |
 | `after_tool_call`  | After each tool result               | `name`, `result`                                       |
 | `on_iteration`     | At the end of each loop iteration    | `iteration`, `messages`, `response`                    |
-| `on_finish`        | When the agent detects `<finish>...</finish>` tags | `content`, `raw_content`, `messages`, `iterations` |
+| `on_finish`        | When the model calls the `finish` tool | `content`, `messages`, `iterations`, `tool_call_id` |
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
 
 ### The on_finish event
 
-Fires when the model's response contains `<finish>...</finish>` tags and the agent is about to return. The `content` kwarg is the extracted inner text (stripped); `raw_content` is the full assistant text including the tags. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
+Fires when the model calls the `finish` tool and the agent is about to return. The `content` kwarg is the value of the `finish` call's `content` argument; `tool_call_id` is the id of that call. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
 
 ## Registering a hook
 

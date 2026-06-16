@@ -73,8 +73,7 @@ async def main() -> None:
         provider="minimax",
         system_prompt=(
             "You coordinate work between agents. Use `delegate_research` to "
-            "gather facts, then wrap your final answer in "
-            "<finish>...</finish> tags."
+            "gather facts, then call the `finish` tool with your final answer."
         ),
         tools=["delegate_research"],
     )

@@ -176,7 +176,7 @@ co.register_agent_preset(
     "coordinator", model="kimi-k2.6", provider="moonshot",
     system_prompt=(
         "You coordinate work. Use `call_agent` to delegate tasks. "
-        "Pass the agent name and a message. Wrap your final response in <finish>...</finish> tags."
+        "Pass the agent name and a message. Call the `finish` tool when you are done."
     ),
     tools=["call_agent"],
 )
