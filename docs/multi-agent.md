@@ -78,7 +78,7 @@ research_tool = co.agent_as_tool(
 
 ## Message isolation
 
-Each child agent gets its own message history. The child starts fresh with its system prompt and the task string as the user message. It does not see the parent's conversation.
+Each child agent gets its own message history. The child starts fresh with its system prompt and the task string as the user message. It does not see the parent's conversation. (If the child preset has no `system_prompt`, the [default system prompt](prompts.md#the-default-system-prompt) is injected.)
 
 This is deliberate. Child agents are sub-tasks, not continuations. They should be focused and stateless from the parent's perspective.
 

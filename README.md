@@ -58,6 +58,7 @@ See [`docs/`](./docs/) for the full documentation set:
 - [Presets](./docs/presets.md)
 - [Hooks](./docs/hooks.md)
 - [Multi-agent](./docs/multi-agent.md)
+- [System prompts](./docs/prompts.md) — the default prompt and how to write your own
 
 ## License
 

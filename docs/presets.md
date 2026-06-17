@@ -25,7 +25,7 @@ All arguments except `name`, `model`, and `provider` are optional.
 | `name`                 | `str`               | --      | Unique identifier (required)        |
 | `model`                | `str`               | --      | Model name (required)               |
 | `provider`             | `str`               | --      | Provider key (required)             |
-| `system_prompt`        | `str \| None`       | `None`  | System message for the agent        |
+| `system_prompt`        | `str \| None`       | `None`  | System message for the agent; if `None`, the [default system prompt](prompts.md#the-default-system-prompt) is used |
 | `tools`                | `list[str]`         | `[]`    | Tool names available to the agent   |
 | `max_iterations`       | `int \| None`       | `None`  | Max loop iterations (None = unlimited)                 |
 | `description`          | `str \| None`       | `None`  | Human-readable description          |

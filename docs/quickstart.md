@@ -170,4 +170,5 @@ print(response.content)
 - [Agent](agent.md) -- learn about `call()`, `call_sync()`, and `Response`
 - [Providers](providers.md) -- set up a real provider
 - [Tools](tools.md) -- build more complex tools
+- [System prompts](prompts.md) -- the default system prompt and how to write your own
 - [Hooks](hooks.md) -- add logging, token tracking, or custom behavior

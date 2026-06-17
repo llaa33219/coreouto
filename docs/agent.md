@@ -42,7 +42,7 @@ agent = co.Agent(config)
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
 
-If `system_prompt` is `None`, a default system prompt is injected automatically explaining the termination model: the loop ends when the model produces a turn with no tool calls, and the model can call the `continue_loop` tool to emit text without ending the loop.
+If `system_prompt` is `None`, a default system prompt is injected automatically explaining the termination model: the loop ends when the model produces a turn with no tool calls, and the model can call the `continue_loop` tool to emit text without ending the loop. For the full text of the default and guidance on writing your own, see [System prompts](prompts.md).
 
 ## Calling the agent
 

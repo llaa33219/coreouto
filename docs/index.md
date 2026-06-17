@@ -52,6 +52,7 @@ pip install coreouto[all]
 - [Presets](presets.md) -- named agent configurations, `register_agent_preset`, `to_config()`
 - [Hooks](hooks.md) -- the 7 hook events, ordering, contrib hooks, writing your own
 - [Multi-agent](multi-agent.md) -- `agent_as_tool`, delegation patterns, message isolation
+- [System prompts](prompts.md) -- the default system prompt, writing your own, provider interaction
 - [Philosophy](philosophy.md) -- deep dive on the five principles and what's intentionally absent
 
 ## License
