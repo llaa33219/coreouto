@@ -4,7 +4,7 @@
 
 Built on five philosophies: **minimalism, extensibility, explicitness, fragmentation, conciseness.**
 
-The whole library reduces to one idea: an agent is called with a message, runs an internal loop, and returns its response when the model calls the built-in `finish` tool with the final answer. Everything else — providers, tools, presets, hooks, multi-agent — is an opt-in extension.
+The whole library reduces to one idea: an agent is called with a message, runs an internal loop, and returns its response when the model produces a turn with no tool calls — the text of that turn becomes the final answer. To output text without ending the loop (e.g. share progress before calling more tools), the model calls the `continue_loop` tool. Everything else — providers, tools, presets, hooks, multi-agent — is an opt-in extension.
 
 ```python
 import os

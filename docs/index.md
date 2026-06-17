@@ -1,6 +1,6 @@
 # coreouto
 
-A minimal, extensible Python agent library. An agent is called with a message, runs an internal loop where it can use tools, and returns its response when the model calls the built-in `finish` tool with the final answer. Everything else is an opt-in extension.
+A minimal, extensible Python agent library. An agent is called with a message, runs an internal loop where it can use tools, and returns its response when the model produces a turn with no tool calls — the text of that turn becomes the final answer. To output text without ending the loop, the model calls the built-in `continue_loop` tool. Everything else is an opt-in extension.
 
 ```python
 import coreouto as co
@@ -33,7 +33,7 @@ pip install coreouto[all]
 
 ## The five philosophies
 
-**Minimalism.** coreouto implements only what an agent system needs to function. There is one loop, one termination protocol (the built-in `finish` tool), one way to wire things together. If a feature can live outside the library, it does. The core stays small so you can read the whole thing in an afternoon.
+**Minimalism.** coreouto implements only what an agent system needs to function. There is one loop, one termination signal (the model produces a turn with no tool calls), and one inverse tool (`continue_loop`) for when the model wants to emit text without ending the loop. If a feature can live outside the library, it does. The core stays small so you can read the whole thing in an afternoon.
 
 **Extensibility.** Providers, tools, presets, and hooks are all open for extension. You can swap the LLM backend, add custom tools, define agent presets, and inject behavior at every stage of the loop. Nothing is locked down.
 

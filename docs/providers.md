@@ -274,13 +274,8 @@ class MockProvider:
 
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            tool_calls=[
-                ToolCall(
-                    id="finish_1",
-                    name="finish",
-                    arguments={"content": self._response_text},
-                ),
-            ],
+            content=self._response_text,
+            tool_calls=[],
             usage=Usage(prompt_tokens=5, completion_tokens=3, total_tokens=8),
         )
 

@@ -8,7 +8,7 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 
-RESERVED_TOOL_NAMES = frozenset({"finish"})
+RESERVED_TOOL_NAMES = frozenset({"continue_loop"})
 
 
 class Tool(BaseModel):
@@ -113,7 +113,7 @@ def _assert_not_reserved(name: str) -> None:
     if name in RESERVED_TOOL_NAMES:
         raise ValueError(
             f"{name!r} is a reserved tool name injected automatically by the agent loop. "
-            f"Use the built-in to terminate the run; do not register a user tool with this name."
+            f"Call it to output text without ending the loop; do not register a user tool with this name."
         )
 
 

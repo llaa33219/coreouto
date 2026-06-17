@@ -1,6 +1,6 @@
 # Agent
 
-The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model calls the built-in `finish` tool with its final answer.
+The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model produces a turn with no tool calls — the text of that turn becomes the final answer. To output text without ending the loop (e.g. share progress before calling more tools), the model calls the built-in `continue_loop` tool.
 
 ## Creating an agent
 
@@ -42,7 +42,7 @@ agent = co.Agent(config)
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
 
-If `system_prompt` is `None`, a default system prompt is injected automatically explaining the `finish` tool termination protocol.
+If `system_prompt` is `None`, a default system prompt is injected automatically explaining the termination model: the loop ends when the model produces a turn with no tool calls, and the model can call the `continue_loop` tool to emit text without ending the loop.
 
 ## Calling the agent
 
@@ -168,7 +168,8 @@ If you need a concurrency cap, write a hook on `BEFORE_TOOL_CALL` that records s
 
 | Field            | Type              | Description                                          |
 |------------------|-------------------|------------------------------------------------------|
-| `content`        | `str`             | The final text extracted from the `finish` tool call's `content` argument |
+| `content`        | `str`             | The text of the model's final turn (the turn that ended the loop) |
+| `stop_reason`    | `Literal["finish", "max_iterations"]` | Why the loop terminated: `"finish"` when the model produced a turn with no tool calls; `"max_iterations"` when the iteration cap was hit (the field is still present in that case, and `content` is whatever text the model last produced) |
 | `messages`       | `list[Message]`   | Full message history (system, user, assistant, tool) |
 | `iterations`     | `int`             | How many LLM calls were made                         |
 | `usage`          | `list[Usage]`     | Token usage per LLM call                             |
@@ -177,13 +178,13 @@ Each `Usage` entry has `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 
 ## `MaxIterationsError`
 
-By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the model calls the `finish` tool (see [How the loop works](#how-the-loop-works)). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without a `finish` tool call:
+By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the model produces a turn with no tool calls (see [How the loop works](#how-the-loop-works)). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without the model terminating:
 
 ```python
 try:
     response = await agent.call("Do something complex.")
 except co.MaxIterationsError as e:
-    print(f"Agent didn't finish: {e}")
+    print(f"Agent didn't terminate: {e}")
 ```
 
 ```python
@@ -198,32 +199,35 @@ config = co.AgentConfig(
 
 ## How the loop works
 
-1. Build the message list: system prompt (default or configured) + history (if any) + user message.
-2. Call the LLM via the registered provider.
-3. Inspect `response.tool_calls`:
-   - If any tool call has `name == "finish"` and no other tool calls were made, extract the `content` argument from the first such call and return a `Response`.
-   - If a `finish` call appears alongside other tool calls, execute only the other calls, append their results, and continue. The `finish` content will be returned on a clean subsequent turn.
-   - If the response has no tool calls at all (just text, or an empty response), the loop continues. The model will see its previous response in the next iteration and is expected to either call a tool or call `finish`.
-4. If there are non-`finish` tool calls, execute each one, append the results to the message list, and go to step 2.
-5. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
+1. Build the message list: system prompt (default or configured) + history (if any) + user message. Drain any pending user messages injected via `Agent.inject_user_message`.
+2. Send the messages and resolved tool definitions to the LLM via the registered provider.
+3. Append the assistant's response (with any tool calls) to the message list.
+4. Fire the `on_iteration` hook.
+5. If the response has **no tool calls** (just text, or an empty response), the loop ends:
+   - The response's `content` becomes `Response.content`.
+   - `Response.stop_reason` is `"finish"`.
+   - The `on_finish` hook fires with `content`, `messages`, and `iterations` (no `tool_call_id`).
+   - The `Response` is returned to the caller.
+6. If the response has tool calls, execute each one (this includes the built-in `continue_loop` — the loop just keeps going), append the results, and return to step 2.
+7. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
 
-> **Minimal termination.** `finish` is the only signal that ends the loop. Without a `finish` call, the loop keeps running until `max_iterations` is reached. There is no "fail if no `finish`" path — a model that returns text without calling `finish` will simply be re-asked.
+> **Implicit termination.** Producing a turn with no tool calls is the only signal that ends the loop. If the model never produces such a turn, the loop keeps running until `max_iterations` is reached.
 
-> **Mixed-turn behavior.** When the model calls `finish` together with other tools in the same turn, coreouto executes the other tools first and asks the LLM again rather than returning the `finish` content immediately. This keeps tool results in the conversation and avoids dropping unfinished work.
+> **`continue_loop` is not a finish signal.** When the model calls `continue_loop` (with or without other tool calls in the same turn), coreouto executes it like any other tool, appends the result, and continues the loop. The loop only ends when the model produces a turn with **no** tool calls at all.
 
 ## Hooks during the loop
 
-Six hook events fire during the loop. See [Hooks](hooks.md) for details:
+Seven hook events fire during the loop. See [Hooks](hooks.md) for details:
 
 - `before_llm_call` -- before each LLM request
 - `after_llm_call` -- after each LLM response
 - `before_tool_call` -- before each tool execution
 - `after_tool_call` -- after each tool result
 - `on_iteration` -- at the end of each iteration
-- `on_finish` -- when the model calls the `finish` tool
+- `on_finish` -- when the loop terminates (the model produced a turn with no tool calls)
 - `on_user_injection` -- when a user message is injected via `Agent.inject_user_message`
 
-## Provider config and the `finish` reminder
+## Provider config
 
 ### `provider_config`
 
@@ -240,16 +244,16 @@ config = co.AgentConfig(
 )
 ```
 
-### What if the model forgets to call `finish`?
+### What if the model never terminates?
 
-The loop keeps running. If the model returns plain text (or an empty response) without calling `finish`, the agent does not raise — it simply iterates again. The previous assistant message stays in the conversation so the model can see what it produced and correct course (call a tool or call `finish`). The only termination is `finish` itself, or `max_iterations` if set.
+The loop keeps calling the LLM. The agent does not raise on a text-only turn — producing a turn with no tool calls is the termination signal, not an error. The previous assistant message stays in the conversation so the model can see what it produced and either call `continue_loop` (if it wants to emit more text and keep going) or simply produce a text-only turn on a later iteration to end the loop. The only terminations are a text-only turn from the model, or `max_iterations` if set (in which case `MaxIterationsError` is raised).
 
 ### Tracking finish events with hooks
 
 ```python
 import coreouto as co
 
-def log_finish(*, content, messages, iterations, tool_call_id, **kwargs):
+def log_finish(*, content, messages, iterations, **kwargs):
     print(f"Agent finished after {iterations} iterations with: {content}")
 
 co.register_hook(co.ON_FINISH, log_finish)

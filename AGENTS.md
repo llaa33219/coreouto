@@ -5,7 +5,7 @@ This file guides AI coding agents working on the coreouto codebase.
 ## What coreouto is
 
 A minimal Python agent library for PyPI. The entire core is one loop:
-**call → internal loop → `Response` when the model calls the `finish` tool**.
+**call → internal loop → `Response` when the model produces a turn with no tool calls** (the text of that turn becomes the final answer). To output text without ending the loop, the model calls the `continue_loop` tool.
 
 ## The five philosophies (NON-NEGOTIABLE)
 

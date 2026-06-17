@@ -44,13 +44,8 @@ class MockProvider:
 
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            tool_calls=[
-                ToolCall(
-                    id="finish_1",
-                    name="finish",
-                    arguments={"content": "Fusion energy made significant progress in 2025."},
-                ),
-            ],
+            content="Fusion energy made significant progress in 2025.",
+            tool_calls=[],
             usage=Usage(prompt_tokens=10, completion_tokens=8, total_tokens=18),
         )
 
@@ -130,13 +125,8 @@ class MockProvider:
 
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            tool_calls=[
-                ToolCall(
-                    id="finish_1",
-                    name="finish",
-                    arguments={"content": "Fusion energy saw major breakthroughs in 2025."},
-                ),
-            ],
+            content="Fusion energy saw major breakthroughs in 2025.",
+            tool_calls=[],
             usage=Usage(prompt_tokens=10, completion_tokens=8, total_tokens=18),
         )
 

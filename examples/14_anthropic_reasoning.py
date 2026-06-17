@@ -43,8 +43,8 @@ async def main() -> None:
             model="claude-sonnet-4-6",
             provider="anthropic",
             system_prompt=(
-                "You are a careful research assistant. Call the `finish` "
-                "tool with your final answer."
+                "You are a careful research assistant. When you have your "
+                "final answer, respond with text (no tool call)."
             ),
             provider_config={
                 "reasoning_effort": "high",
@@ -60,7 +60,7 @@ async def main() -> None:
             provider="anthropic",
             system_prompt=(
                 "Classify the user's request in one of: BILLING, ACCOUNT, "
-                "TECHNICAL, OTHER. Call the `finish` tool with your answer."
+                "TECHNICAL, OTHER. Respond with your answer (no tool call)."
             ),
             provider_config={
                 "reasoning_effort": "low",

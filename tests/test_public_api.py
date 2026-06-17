@@ -21,6 +21,7 @@ _EXPECTED_NAMES = [
     "ON_USER_INJECTION",
     "RESERVED_TOOL_NAMES",
     "Response",
+    "StopReason",
     "TextBlock",
     "Tool",
     "ToolCall",

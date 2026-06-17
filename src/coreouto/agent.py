@@ -11,6 +11,7 @@ from coreouto._types import (
     ImageBlock,
     Message,
     Response,
+    StopReason,
     TextBlock,
     ToolCall,
     ToolResult,
@@ -31,23 +32,24 @@ from coreouto.providers import get_provider
 from coreouto.settings import normalize_provider_config
 from coreouto.tools import Tool, get_tool
 
-FINISH_TOOL_NAME = "finish"
+CONTINUE_LOOP_TOOL_NAME = "continue_loop"
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
 
 
-_FINISH_TOOL = Tool(
-    name=FINISH_TOOL_NAME,
+_CONTINUE_LOOP_TOOL = Tool(
+    name=CONTINUE_LOOP_TOOL_NAME,
     description=(
-        "End the agent loop and return `content` as the final answer to the user. "
-        "Pass the user-facing answer in the `content` argument. Omit `content` for "
-        "an empty response."
+        "Output a text-only turn to the user without ending the agent loop. Use "
+        "this when you want to communicate something to the user but intend to call "
+        "more tools afterward. The text in the `content` argument is delivered to "
+        "the user but the loop continues."
     ),
     parameters={
         "type": "object",
         "properties": {
             "content": {
                 "type": "string",
-                "description": ("The final user-facing answer. Omit for an empty response."),
+                "description": "The text to deliver to the user this turn.",
             },
         },
         "required": [],
@@ -58,21 +60,16 @@ _FINISH_TOOL = Tool(
 
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are an agent. You can use tools to gather information. The loop ends only "
-    "when you call the `finish` tool with your final answer in the `content` argument. "
-    "If you need more information or want to perform more work, call a tool instead.\n\n"
+    "You are an agent. You can use tools to gather information.\n\n"
+    "Termination model:\n"
+    "  - The loop ends when you produce a turn with no tool calls. The text in "
+    "such a turn is returned to the user as the final answer.\n"
+    "  - If you want to output text to the user but keep working (e.g. share "
+    "progress before calling more tools), call the `continue_loop` tool with "
+    "`content`.\n\n"
     "Rules:\n"
-    "  - Call `finish` only when the work is fully complete and you are returning the "
-    "final answer to the user.\n"
-    "  - Do NOT call `finish` if you still intend to call more tools, refine your "
-    "answer, or continue working.\n"
-    "  - If you call `finish` together with other tool calls in the same turn, the other "
-    "tools will still execute; the `finish` content will only be returned on a clean "
-    "subsequent turn.\n\n"
-    "Example:\n"
-    "User: What is the capital of France?\n"
-    "You: I'll answer from general knowledge. <finish tool call with content='Paris is "
-    "the capital of France.'>\n"
+    "  - do NOT call `continue_loop` if you intend to end the loop. Just respond "
+    "with text and no tool call when you're done.\n"
 )
 
 
@@ -192,7 +189,7 @@ class Agent:
                 raise KeyError(f"tool not registered: {name!r}")
             resolved_tools.append(tool)
 
-        effective_tools: list[Tool] = [*resolved_tools, _FINISH_TOOL]
+        effective_tools: list[Tool] = [*resolved_tools, _CONTINUE_LOOP_TOOL]
 
         messages: list[Message] = []
         if cfg.system_prompt:
@@ -221,8 +218,8 @@ class Agent:
             iterations += 1
             if cfg.max_iterations is not None and iterations > cfg.max_iterations:
                 raise MaxIterationsError(
-                    f"max_iterations ({cfg.max_iterations}) reached without a "
-                    f"`{FINISH_TOOL_NAME}` tool call"
+                    f"max_iterations ({cfg.max_iterations}) reached without "
+                    f"terminating the loop (the model kept producing tool calls)"
                 )
 
             await trigger(
@@ -257,41 +254,39 @@ class Agent:
             )
 
             tool_calls = list(response.tool_calls)
-            finish_call: ToolCall | None = next(
-                (tc for tc in tool_calls if tc.name == FINISH_TOOL_NAME),
-                None,
-            )
-            other_calls: list[ToolCall] = [tc for tc in tool_calls if tc.name != FINISH_TOOL_NAME]
 
-            if finish_call is not None and not other_calls:
-                content_value = finish_call.arguments.get("content", "")
-                if content_value is None:
-                    content_value = ""
-                final_answer = str(content_value)
+            if not tool_calls:
+                # No tool call = loop terminates. Use the model's text as the final answer.
+                final_answer = response.content or ""
 
                 await trigger(
                     ON_FINISH,
                     content=final_answer,
                     messages=messages,
                     iterations=iterations,
-                    tool_call_id=finish_call.id,
                 )
+                stop_reason: StopReason = "finish"
                 return Response(
                     content=final_answer,
                     messages=messages,
                     iterations=iterations,
                     usage=all_usage,
+                    stop_reason=stop_reason,
                 )
 
-            if not tool_calls:
-                continue
-
-            resolved = [(tc, get_tool(tc.name)) for tc in other_calls]
+            resolved: list[tuple[ToolCall, Tool | None]] = []
+            for tc in tool_calls:
+                user_tool = get_tool(tc.name)
+                if user_tool is not None:
+                    resolved.append((tc, user_tool))
+                else:
+                    injected_tool = next((t for t in effective_tools if t.name == tc.name), None)
+                    resolved.append((tc, injected_tool))
             all_parallelizable = cfg.parallel_tool_calls and all(
                 tool is not None and tool.parallelizable for _, tool in resolved
             )
 
-            if all_parallelizable and len(other_calls) > 1:
+            if all_parallelizable and len(tool_calls) > 1:
                 results = await asyncio.gather(
                     *(_run_one_tool_call(tc, tool) for tc, tool in resolved)
                 )
@@ -300,6 +295,6 @@ class Agent:
                 for tc, tool in resolved:
                     results.append(await _run_one_tool_call(tc, tool))
 
-            for tool_call, result in zip(other_calls, results, strict=False):
+            for tool_call, result in zip(tool_calls, results, strict=False):
                 tool_msg = provider.format_tool_result(tool_call, result)
                 messages.append(tool_msg)

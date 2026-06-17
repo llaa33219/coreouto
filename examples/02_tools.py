@@ -46,7 +46,7 @@ async def main() -> None:
         provider="anthropic",
         system_prompt=(
             "You are a research assistant. Use the available tools to gather "
-            "information, then call the `finish` tool with your final answer."
+            "information, then respond with your final answer (no tool call)."
         ),
         tools=["get_weather", "search_web"],
     )

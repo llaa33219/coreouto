@@ -11,12 +11,12 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `before_tool_call` | Before each tool executes            | `name`, `arguments`                                    |
 | `after_tool_call`  | After each tool result               | `name`, `result`                                       |
 | `on_iteration`     | At the end of each loop iteration    | `iteration`, `messages`, `response`                    |
-| `on_finish`        | When the model calls the `finish` tool | `content`, `messages`, `iterations`, `tool_call_id` |
+| `on_finish`        | When the loop terminates (model produced no tool calls) | `content`, `messages`, `iterations` |
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
 
 ### The on_finish event
 
-Fires when the model calls the `finish` tool and the agent is about to return. The `content` kwarg is the value of the `finish` call's `content` argument; `tool_call_id` is the id of that call. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
+Fires when the loop terminates, which happens when the model produces a turn with no tool calls. The `content` kwarg is the text of that final turn. There is no `tool_call_id` because the loop did not end because of a tool call — it ended because the model emitted text-only. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
 
 ## Registering a hook
 

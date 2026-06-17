@@ -39,13 +39,18 @@ def _clean_state():
     clear_providers()
 
 
-def _finish_tool_call(content: str, call_id: str = "finish_1") -> dict:
-    return {"id": call_id, "name": "finish", "arguments": {"content": content}}
+def _terminate_response(content: str | None = None) -> MockLLMResponse:
+    """Build a response that terminates the loop by producing no tool calls."""
+    return MockLLMResponse(content=content or "")
 
 
-async def test_happy_path_single_iteration_finish():
+def _continue_loop_tool_call(content: str, call_id: str = "cl_1") -> dict:
+    return {"id": call_id, "name": "continue_loop", "arguments": {"content": content}}
+
+
+async def test_happy_path_text_only_terminates():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=10))
@@ -53,16 +58,17 @@ async def test_happy_path_single_iteration_finish():
 
     assert response.content == "done"
     assert response.iterations == 1
+    assert response.stop_reason == "finish"
     assert len(response.messages) == 3
     assert response.messages[0].role == "system"
     assert response.messages[1].role == "user"
     assert response.messages[1].content == "hello"
     assert response.messages[2].role == "assistant"
-    assert response.messages[2].tool_calls is not None
-    assert response.messages[2].tool_calls[0].name == "finish"
+    assert response.messages[2].tool_calls is None
+    assert response.messages[2].content == "done"
 
 
-async def test_multi_iteration_with_tool_call():
+async def test_multi_iteration_tool_then_text():
     side_effect: list[str] = []
 
     @register_tool("echo")
@@ -74,7 +80,7 @@ async def test_multi_iteration_with_tool_call():
     provider.queue(
         MockLLMResponse(tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}])
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["echo"]))
@@ -107,7 +113,7 @@ async def test_multi_iteration_two_tools_in_one_response():
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["tool_a", "tool_b"]))
@@ -130,13 +136,16 @@ async def test_max_iterations_error():
     agent = Agent(
         AgentConfig(name="test", model="m", provider="mock", max_iterations=2, tools=["think"])
     )
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
+    with pytest.raises(
+        MaxIterationsError,
+        match=r"max_iterations \(2\) reached without terminating the loop",
+    ):
         await agent.call("hello")
 
 
 async def test_system_prompt_injected_as_first_message():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", system_prompt="you are X"))
@@ -173,7 +182,7 @@ async def test_hook_firing_order():
     provider.queue(
         MockLLMResponse(tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}])
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["echo"]))
@@ -205,7 +214,10 @@ async def test_override_at_call_time():
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=5))
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
+    with pytest.raises(
+        MaxIterationsError,
+        match=r"max_iterations \(2\) reached without terminating the loop",
+    ):
         await agent.call(
             "hello",
             override=AgentConfig(
@@ -221,7 +233,7 @@ async def test_tool_error_surfaces_as_is_error():
 
     provider = MockProvider()
     provider.queue(MockLLMResponse(tool_calls=[{"id": "tc1", "name": "boom", "arguments": {}}]))
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["boom"]))
@@ -257,7 +269,7 @@ async def test_async_tool_handler():
             tool_calls=[{"id": "tc1", "name": "async_echo", "arguments": {"msg": "hi"}}]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["async_echo"]))
@@ -271,7 +283,7 @@ async def test_usage_tracking():
     provider = MockProvider()
     provider.queue(
         MockLLMResponse(
-            tool_calls=[_finish_tool_call("done")],
+            content="done",
             prompt_tokens=10,
             completion_tokens=5,
         )
@@ -298,7 +310,7 @@ async def test_usage_tracking_multiple_iterations():
     )
     provider.queue(
         MockLLMResponse(
-            tool_calls=[_finish_tool_call("done")],
+            content="done",
             prompt_tokens=8,
             completion_tokens=4,
         )
@@ -338,13 +350,16 @@ async def test_max_iterations_zero():
     agent = Agent(
         AgentConfig(name="test", model="m", provider="mock", max_iterations=0, tools=["think"])
     )
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(0\) reached"):
+    with pytest.raises(
+        MaxIterationsError,
+        match=r"max_iterations \(0\) reached without terminating the loop",
+    ):
         await agent.call("hello")
 
 
 async def test_provider_config_forwarded_to_provider():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(
@@ -360,7 +375,7 @@ async def test_provider_config_forwarded_to_provider():
     assert provider.calls[0]["kwargs"] == {"temperature": 0.5, "max_tokens": 100}
 
 
-async def test_max_iterations_raises_when_finish_never_called():
+async def test_max_iterations_raises_when_loop_never_terminates():
     @register_tool("think")
     def think() -> str:
         return "thought"
@@ -374,7 +389,10 @@ async def test_max_iterations_raises_when_finish_never_called():
     agent = Agent(
         AgentConfig(name="test", model="m", provider="mock", max_iterations=2, tools=["think"])
     )
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
+    with pytest.raises(
+        MaxIterationsError,
+        match=r"max_iterations \(2\) reached without terminating the loop",
+    ):
         await agent.call("hello")
 
 
@@ -386,7 +404,7 @@ async def test_max_tokens_translates_per_provider():
         ("google", "max_output_tokens"),
     ):
         provider = MockProvider()
-        provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+        provider.queue(_terminate_response("done"))
         register_provider(pname, provider)
 
         agent = Agent(
@@ -421,7 +439,7 @@ async def test_reasoning_effort_forwards_per_provider():
     ]
     for pname, provider_config, expected_kwargs in cases:
         provider = MockProvider()
-        provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+        provider.queue(_terminate_response("done"))
         register_provider(pname, provider)
 
         agent = Agent(
@@ -440,7 +458,7 @@ async def test_reasoning_effort_forwards_per_provider():
 
 async def test_reasoning_effort_anthropic_none_drops_kwarg():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("anthropic", provider)
 
     agent = Agent(
@@ -458,7 +476,7 @@ async def test_reasoning_effort_anthropic_none_drops_kwarg():
 
 async def test_provider_passthrough_merges_with_normalized():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("openai", provider)
 
     agent = Agent(
@@ -477,7 +495,7 @@ async def test_provider_passthrough_merges_with_normalized():
 
 async def test_provider_passthrough_overrides_normalized_on_conflict():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("openai", provider)
 
     agent = Agent(
@@ -508,37 +526,41 @@ async def test_unknown_provider_config_key_raises():
         await agent.call("hello")
 
 
-async def test_text_only_response_continues_loop():
-    """A response with only text (no tool call) does not raise; the loop just retries.
-
-    The minimalism principle: `finish` is the only termination signal. Without it,
-    the loop keeps running until either `finish` is called or `max_iterations` is hit.
+async def test_text_only_response_terminates_loop():
+    """A response with only text (no tool call) terminates the loop. The text
+    becomes the final answer. No `finish` tool call needed.
     """
     provider = MockProvider()
-    provider.queue(MockLLMResponse(content="just text"))
-    provider.queue(MockLLMResponse(content="still no tool call"))
+    provider.queue(_terminate_response("just text"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=2))
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
-        await agent.call("hello")
+    response = await agent.call("hello")
+
+    assert response.content == "just text"
+    assert response.iterations == 1
+    assert response.stop_reason == "finish"
 
 
-async def test_empty_response_continues_loop():
-    """An empty response (no content, no tool calls) does not raise; the loop retries."""
+async def test_empty_response_terminates_loop_with_empty_content():
+    """An empty response (no content, no tool calls) terminates the loop with
+    empty content.
+    """
     provider = MockProvider()
-    provider.queue(MockLLMResponse(content=None))
-    provider.queue(MockLLMResponse(content=None))
+    provider.queue(_terminate_response(""))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=2))
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
-        await agent.call("hello")
+    response = await agent.call("hello")
+
+    assert response.content == ""
+    assert response.iterations == 1
+    assert response.stop_reason == "finish"
 
 
 async def test_history_prepended_to_messages():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     history = [
@@ -561,7 +583,7 @@ async def test_history_prepended_to_messages():
 
 async def test_history_none_default_preserves_existing_behavior():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -576,7 +598,7 @@ async def test_history_none_default_preserves_existing_behavior():
 
 async def test_history_empty_list_equals_none():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -590,7 +612,7 @@ async def test_history_empty_list_equals_none():
 
 async def test_history_with_system_prompt_prepends_cfg_first():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     history = [
@@ -623,7 +645,7 @@ async def test_history_can_be_fabricated():
         return await original_create(messages, **kwargs)
 
     provider.create = capturing_create
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     fake_history = [
@@ -636,9 +658,9 @@ async def test_history_can_be_fabricated():
     await agent.call("real question", history=fake_history)
 
     sent = captured_messages[0]
-    assert len(sent) == 6
-    assert [m.content for m in sent] == [
-        _DEFAULT_SYSTEM_PROMPT,
+    assert sent[0].role == "system"
+    non_system = [m for m in sent if m.role != "system"]
+    assert [m.content for m in non_system] == [
         "fabricated question 1",
         "fabricated answer 1",
         "fabricated question 2",
@@ -649,7 +671,7 @@ async def test_history_can_be_fabricated():
 
 async def test_history_preserves_assistant_tool_calls():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     history = [
@@ -678,7 +700,7 @@ def test_call_sync_passes_history_through():
     from coreouto.sync import call_sync
 
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -691,7 +713,7 @@ def test_call_sync_passes_history_through():
 
 async def test_history_works_with_override():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", system_prompt="default"))
@@ -719,7 +741,7 @@ async def test_inject_user_message_basic():
 
     provider = MockProvider()
     provider.queue(MockLLMResponse(tool_calls=[{"id": "t1", "name": "noop", "arguments": {}}]))
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["noop"]))
@@ -740,7 +762,7 @@ async def test_inject_user_message_fires_hook():
 
     provider = MockProvider()
     provider.queue(MockLLMResponse(tool_calls=[{"id": "t1", "name": "noop", "arguments": {}}]))
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     injection_events: list[Message] = []
@@ -766,7 +788,7 @@ async def test_inject_multiple_messages_all_drained_in_one_iteration():
 
     provider = MockProvider()
     provider.queue(MockLLMResponse(tool_calls=[{"id": "t1", "name": "noop", "arguments": {}}]))
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["noop"]))
@@ -790,7 +812,7 @@ async def test_inject_from_concurrent_task():
 
     provider = MockProvider()
     provider.queue(MockLLMResponse(tool_calls=[{"id": "t1", "name": "noop", "arguments": {}}]))
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["noop"]))
@@ -812,7 +834,7 @@ async def test_inject_from_concurrent_task():
 
 async def test_no_injection_no_change():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -833,7 +855,7 @@ async def test_on_finish_hook_receives_extracted_content():
     register_hook(ON_FINISH, hook)
 
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("my answer", call_id="fc1")]))
+    provider.queue(_terminate_response("my answer"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -843,9 +865,8 @@ async def test_on_finish_hook_receives_extracted_content():
     assert len(received) == 1
     assert received[0]["content"] == "my answer"
     assert received[0]["iterations"] == 1
-    assert received[0]["tool_call_id"] == "fc1"
     assert "messages" in received[0]
-    assert "raw_content" not in received[0]
+    assert "tool_call_id" not in received[0]
 
 
 async def test_tool_returning_list_of_content_blocks():
@@ -862,7 +883,7 @@ async def test_tool_returning_list_of_content_blocks():
             tool_calls=[{"id": "tc1", "name": "show_image", "arguments": {"label": "cat"}}]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -894,7 +915,7 @@ async def test_tool_returning_tool_result_with_blocks():
     provider.queue(
         MockLLMResponse(tool_calls=[{"id": "tc1", "name": "fetch", "arguments": {"q": "x"}}])
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -914,7 +935,7 @@ async def test_tool_returning_plain_string_still_works():
     provider.queue(
         MockLLMResponse(tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}])
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
@@ -958,7 +979,7 @@ async def test_parallel_tool_calls_run_concurrently():
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(
@@ -1008,7 +1029,7 @@ async def test_sync_tools_dont_block_event_loop_when_parallel():
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(
@@ -1050,7 +1071,7 @@ async def test_non_parallelizable_tool_forces_serial_dispatch():
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(
@@ -1099,7 +1120,7 @@ async def test_parallel_tool_results_in_history_preserve_order():
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(
@@ -1146,7 +1167,7 @@ async def test_parallel_default_off_preserves_legacy_sequential():
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(
@@ -1164,32 +1185,35 @@ async def test_parallel_default_off_preserves_legacy_sequential():
 
 async def test_default_max_iterations_is_unlimited():
     """By default max_iterations is None, which means the loop never
-    raises MaxIterationsError on iteration count alone. The test queues
-    a single finish tool call and confirms the loop returns normally.
+    raises MaxIterationsError on iteration count alone. A text-only
+    response terminates the loop normally.
     """
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
     response = await agent.call("hi")
     assert response.content == "ok"
+    assert response.stop_reason == "finish"
 
 
 async def test_max_iterations_explicit_none_is_unlimited():
     """Setting max_iterations=None explicitly is the same as the default."""
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("ok")]))
+    provider.queue(_terminate_response("ok"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=None))
     response = await agent.call("hi")
     assert response.content == "ok"
+    assert response.stop_reason == "finish"
 
 
 async def test_max_iterations_finite_still_raises():
     """When max_iterations is a positive int, the loop still raises
-    MaxIterationsError after that many iterations without a finish tool call.
+    MaxIterationsError after that many iterations when the model keeps
+    producing tool calls without terminating.
     """
 
     @register_tool("noop")
@@ -1204,70 +1228,14 @@ async def test_max_iterations_finite_still_raises():
     agent = Agent(
         AgentConfig(name="test", model="m", provider="mock", max_iterations=3, tools=["noop"])
     )
-    with pytest.raises(MaxIterationsError, match=r"max_iterations \(3\) reached"):
+    with pytest.raises(
+        MaxIterationsError,
+        match=r"max_iterations \(3\) reached without terminating the loop",
+    ):
         await agent.call("hi")
 
 
-async def test_finish_tool_call_terminates_immediately():
-    provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("final answer")]))
-    register_provider("mock", provider)
-
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
-    response = await agent.call("hello")
-
-    assert response.content == "final answer"
-    assert response.iterations == 1
-    assert len(provider.calls) == 1
-
-
-async def test_finish_tool_call_with_empty_content_returns_empty_string():
-    provider = MockProvider()
-    provider.queue(
-        MockLLMResponse(
-            tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {"content": ""}}]
-        )
-    )
-    register_provider("mock", provider)
-
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
-    response = await agent.call("hello")
-
-    assert response.content == ""
-
-
-async def test_finish_tool_call_omitted_content_returns_empty_string():
-    provider = MockProvider()
-    provider.queue(
-        MockLLMResponse(tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {}}])
-    )
-    register_provider("mock", provider)
-
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
-    response = await agent.call("hello")
-
-    assert response.content == ""
-
-
-async def test_multiple_finish_calls_in_one_turn_uses_first():
-    provider = MockProvider()
-    provider.queue(
-        MockLLMResponse(
-            tool_calls=[
-                {"id": "finish_1", "name": "finish", "arguments": {"content": "first"}},
-                {"id": "finish_2", "name": "finish", "arguments": {"content": "second"}},
-            ]
-        )
-    )
-    register_provider("mock", provider)
-
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
-    response = await agent.call("hello")
-
-    assert response.content == "first"
-
-
-async def test_finish_tool_call_skipped_in_dispatch():
+async def test_continue_loop_tool_call_with_other_tools_executes_all_then_continues():
     side_effect: list[str] = []
 
     @register_tool("echo")
@@ -1280,99 +1248,65 @@ async def test_finish_tool_call_skipped_in_dispatch():
         MockLLMResponse(
             tool_calls=[
                 {"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}},
-                {"id": "finish_1", "name": "finish", "arguments": {"content": "done"}},
+                _continue_loop_tool_call("working on it"),
             ]
         )
     )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("done")]))
+    provider.queue(_terminate_response("echo: hi"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["echo"]))
     response = await agent.call("hello")
 
     assert side_effect == ["hi"]
-    assert response.content == "done"
-    tool_result_names = [m.name for m in provider.calls[0]["messages"] if m.role == "tool"]
-    assert "finish" not in tool_result_names
-
-
-async def test_finish_tool_call_with_other_tools_executes_others_then_continues():
-    side_effect: list[str] = []
-
-    @register_tool("echo")
-    def echo(msg: str) -> str:
-        side_effect.append(msg)
-        return f"echo: {msg}"
-
-    provider = MockProvider()
-    provider.queue(
-        MockLLMResponse(
-            tool_calls=[
-                {"id": "finish_1", "name": "finish", "arguments": {"content": "premature"}},
-                {"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}},
-            ]
-        )
-    )
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("final")]))
-    register_provider("mock", provider)
-
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock", tools=["echo"]))
-    response = await agent.call("hello")
-
-    assert side_effect == ["hi"]
-    assert response.content == "final"
+    assert response.content == "echo: hi"
     assert response.iterations == 2
+    second_call_messages = provider.calls[1]["messages"]
+    tool_msgs = [m for m in second_call_messages if m.role == "tool"]
+    tool_msg_names = [m.name for m in tool_msgs]
+    assert "continue_loop" in tool_msg_names
+    assert "echo" in tool_msg_names
 
 
-async def test_finish_tool_call_id_passed_to_on_finish_hook():
-    received = []
-
-    def hook(**kwargs):
-        received.append(kwargs)
-
-    register_hook(ON_FINISH, hook)
-
+async def test_continue_loop_tool_call_with_no_other_tools_continues_loop():
     provider = MockProvider()
-    provider.queue(MockLLMResponse(tool_calls=[_finish_tool_call("answer", call_id="my_id")]))
-    register_provider("mock", provider)
-
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
-    await agent.call("hello")
-
-    assert len(received) == 1
-    assert received[0]["tool_call_id"] == "my_id"
-
-
-async def test_finish_content_is_string_coerced():
-    provider = MockProvider()
-    provider.queue(
-        MockLLMResponse(
-            tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {"content": 42}}]
-        )
-    )
+    provider.queue(MockLLMResponse(tool_calls=[_continue_loop_tool_call("still working")]))
+    provider.queue(_terminate_response("final answer"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
     response = await agent.call("hello")
 
-    assert response.content == "42"
+    assert response.iterations == 2
+    assert response.content == "final answer"
 
 
-async def test_finish_content_none_returns_empty_string():
+async def test_continue_loop_result_appears_in_messages():
     provider = MockProvider()
-    provider.queue(
-        MockLLMResponse(
-            tool_calls=[{"id": "finish_1", "name": "finish", "arguments": {"content": None}}]
-        )
-    )
+    provider.queue(MockLLMResponse(tool_calls=[_continue_loop_tool_call("status update")]))
+    provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
     response = await agent.call("hello")
 
-    assert response.content == ""
+    tool_msgs = [m for m in response.messages if m.role == "tool" and m.name == "continue_loop"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].content == "status update"
+    assert tool_msgs[0].tool_call_id == "cl_1"
 
 
-async def test_agent_config_with_finish_tool_raises():
-    with pytest.raises(ValueError, match=r"'finish' is a reserved tool name"):
-        AgentConfig(name="test", model="m", provider="mock", tools=["finish"])
+async def test_response_stop_reason_default_is_finish():
+    provider = MockProvider()
+    provider.queue(_terminate_response("done"))
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call("hello")
+
+    assert response.stop_reason == "finish"
+
+
+def test_agent_config_with_continue_loop_tool_raises():
+    with pytest.raises(ValueError, match=r"'continue_loop' is a reserved tool name"):
+        AgentConfig(name="test", model="m", provider="mock", tools=["continue_loop"])

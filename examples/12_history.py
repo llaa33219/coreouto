@@ -17,19 +17,13 @@ Run with:
 import asyncio
 
 import coreouto as co
-from coreouto._types import LLMResponse, Message, ToolCall, Usage
+from coreouto._types import LLMResponse, Message, Usage
 
 
 class MockOpenAI:
     async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
         return LLMResponse(
-            tool_calls=[
-                ToolCall(
-                    id="finish_1",
-                    name="finish",
-                    arguments={"content": f"echo: {messages[-1].content}"},
-                ),
-            ],
+            content=f"echo: {messages[-1].content}",
             usage=Usage(prompt_tokens=1, completion_tokens=1, total_tokens=2),
         )
 

@@ -4,7 +4,7 @@ coreouto is built on five principles. These aren't aspirational statements. They
 
 ## Minimalism
 
-An agent library needs to do exactly one thing well: run a loop where an LLM calls tools and eventually returns a result. coreouto's core is that loop, the built-in `finish` tool that ends it, and the data structures that flow through it. That's it.
+An agent library needs to do exactly one thing well: run a loop where an LLM calls tools and eventually returns a result. coreouto's core is that loop, the termination signal that ends it (a turn with no tool calls), the `continue_loop` tool that lets the model emit text without ending the loop, and the data structures that flow through it. That's it.
 
 Minimalism means the whole library fits in your head. You can read `agent.py` in ten minutes and understand every line. There's no framework magic, no hidden state machines, no configuration hierarchies. When something goes wrong, you can trace the execution path without grep-searching through layers of abstraction.
 

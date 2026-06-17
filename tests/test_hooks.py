@@ -189,13 +189,11 @@ async def test_trigger_on_finish_hook() -> None:
         content="answer",
         messages=[],
         iterations=1,
-        tool_call_id="finish_1",
     )
     assert received == [
         {
             "content": "answer",
             "messages": [],
             "iterations": 1,
-            "tool_call_id": "finish_1",
         }
     ]
