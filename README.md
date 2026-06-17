@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./logo.svg" alt="coreouto" width="800">
+</p>
+
 # coreouto
 
 **A minimal, extensible agent library for Python.**
