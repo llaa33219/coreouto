@@ -39,10 +39,10 @@ _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioB
 _CONTINUE_LOOP_TOOL = Tool(
     name=CONTINUE_LOOP_TOOL_NAME,
     description=(
-        "Output a text-only turn to the user without ending the agent loop. Use "
-        "this when you want to communicate something to the user but intend to call "
-        "more tools afterward. The text in the `content` argument is delivered to "
-        "the user but the loop continues."
+        "Send text to the user without ending the agent loop. Use for mid-task "
+        "progress updates when you still intend to call more tools. The `content` "
+        "argument is shown to the user; the loop continues. To end the loop, "
+        "respond with text and no tool call — do NOT use this tool for that."
     ),
     parameters={
         "type": "object",
@@ -60,16 +60,18 @@ _CONTINUE_LOOP_TOOL = Tool(
 
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are an agent. You can use tools to gather information.\n\n"
-    "Termination model:\n"
-    "  - The loop ends when you produce a turn with no tool calls. The text in "
-    "such a turn is returned to the user as the final answer.\n"
-    "  - If you want to output text to the user but keep working (e.g. share "
-    "progress before calling more tools), call the `continue_loop` tool with "
-    "`content`.\n\n"
-    "Rules:\n"
-    "  - do NOT call `continue_loop` if you intend to end the loop. Just respond "
-    "with text and no tool call when you're done.\n"
+    "You are an agent. Use tools to gather information as needed.\n\n"
+    "The loop ends when your turn has NO tool calls — that text becomes the final "
+    "answer returned to the user. To finish, respond with text only.\n\n"
+    "The `continue_loop` tool does the opposite: it sends text to the user mid-task "
+    "but keeps the loop running for more tools. Use it for progress updates before "
+    "calling more tools.\n\n"
+    "Example:\n"
+    "  User: Find news and summarize.\n"
+    "  You: [search]                          -> loop continues\n"
+    '  You: continue_loop(content="Found 3 articles.")  -> text to user, loop continues\n'
+    "  You: [fetch article]                   -> loop continues\n"
+    "  You: Here is a summary.                -> no tool call -> loop ends, returned to user\n"
 )
 
 
