@@ -299,8 +299,6 @@ class TestResponse:
         assert len(r.messages) == 2
         assert r.iterations == 1
         assert r.usage == []
-        assert r.finish_called is True
-        assert r.warnings == []
 
     def test_all_fields(self) -> None:
         m1 = Message(role="user", content="hi")
@@ -310,17 +308,9 @@ class TestResponse:
             messages=[m1],
             iterations=3,
             usage=[u, u],
-            finish_called=False,
-            warnings=["warn1", "warn2"],
         )
         assert r.iterations == 3
         assert len(r.usage) == 2
-        assert r.finish_called is False
-        assert r.warnings == ["warn1", "warn2"]
-
-    def test_warnings_defaults_to_empty_list(self) -> None:
-        r = Response(content="x", messages=[], iterations=0)
-        assert r.warnings == []
 
     def test_missing_required(self) -> None:
         with pytest.raises(ValidationError):
@@ -338,8 +328,6 @@ class TestResponse:
             messages=[m],
             iterations=2,
             usage=[u],
-            finish_called=True,
-            warnings=["w1"],
         )
         rt = Response.model_validate_json(r.model_dump_json())
         assert rt == r

@@ -210,12 +210,3 @@ class Response(BaseModel):
     messages: list[Message]
     iterations: int
     usage: list[Usage] = Field(default_factory=list)
-    finish_called: bool = Field(
-        default=True,
-        description=(
-            "Always True on normal completion because the only success path is a "
-            "finish tool call. MaxIterationsError is the only non-success exit and "
-            "it raises instead of returning a Response."
-        ),
-    )
-    warnings: list[str] = Field(default_factory=list)

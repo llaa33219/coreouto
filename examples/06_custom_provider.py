@@ -80,7 +80,6 @@ async def main() -> None:
     )
     response = await co.Agent(config).call("hello world")
     print("Echo response:", response.content)
-    print("Finish called:", response.finish_called)
 
 
 if __name__ == "__main__":

@@ -32,18 +32,15 @@ from coreouto.settings import normalize_provider_config
 from coreouto.tools import Tool, get_tool
 
 FINISH_TOOL_NAME = "finish"
-_FINISH_REMINDER = (
-    "Reminder: when you are done, call the `finish` tool with your final answer in the "
-    "`content` argument. Example: finish(content='Paris is the capital of France.')."
-)
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
 
 
 _FINISH_TOOL = Tool(
     name=FINISH_TOOL_NAME,
     description=(
-        "Signal that the task is complete and return the final answer to the user. "
-        "Pass the user-facing answer in the `content` argument."
+        "End the agent loop and return `content` as the final answer to the user. "
+        "Pass the user-facing answer in the `content` argument. Omit `content` for "
+        "an empty response."
     ),
     parameters={
         "type": "object",
@@ -61,18 +58,14 @@ _FINISH_TOOL = Tool(
 
 
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are an agent. You can use tools to gather information. When the task is fully "
-    "complete and you have a self-contained answer for the user, signal completion by "
-    "calling the `finish` tool with your final answer in the `content` argument.\n\n"
+    "You are an agent. You can use tools to gather information. The loop ends only "
+    "when you call the `finish` tool with your final answer in the `content` argument. "
+    "If you need more information or want to perform more work, call a tool instead.\n\n"
     "Rules:\n"
     "  - Call `finish` only when the work is fully complete and you are returning the "
-    "final answer to the user. Once you call `finish`, the loop ends and your answer is "
-    "delivered.\n"
+    "final answer to the user.\n"
     "  - Do NOT call `finish` if you still intend to call more tools, refine your "
-    "answer, or continue working. Do NOT call it for intermediate summaries, partial "
-    "progress, or thinking aloud.\n"
-    "  - If you respond with text but no `finish` tool call (and no other tool calls), "
-    "the loop will inject a reminder asking you to call `finish`.\n"
+    "answer, or continue working.\n"
     "  - If you call `finish` together with other tool calls in the same turn, the other "
     "tools will still execute; the `finish` content will only be returned on a clean "
     "subsequent turn.\n\n"
@@ -288,11 +281,9 @@ class Agent:
                     messages=messages,
                     iterations=iterations,
                     usage=all_usage,
-                    finish_called=True,
                 )
 
             if not tool_calls:
-                messages.append(Message(role="user", content=_FINISH_REMINDER))
                 continue
 
             resolved = [(tc, get_tool(tc.name)) for tc in other_calls]

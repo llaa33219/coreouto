@@ -172,7 +172,6 @@ If you need a concurrency cap, write a hook on `BEFORE_TOOL_CALL` that records s
 | `messages`       | `list[Message]`   | Full message history (system, user, assistant, tool) |
 | `iterations`     | `int`             | How many LLM calls were made                         |
 | `usage`          | `list[Usage]`     | Token usage per LLM call                             |
-| `finish_called`  | `bool`            | Always `True` on normal completion because the only success path is a `finish` tool call |
 
 Each `Usage` entry has `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 
@@ -202,11 +201,13 @@ config = co.AgentConfig(
 1. Build the message list: system prompt (default or configured) + history (if any) + user message.
 2. Call the LLM via the registered provider.
 3. Inspect `response.tool_calls`:
-   - If any tool call has `name == "finish"`, extract the `content` argument from the first such call and return a `Response`.
+   - If any tool call has `name == "finish"` and no other tool calls were made, extract the `content` argument from the first such call and return a `Response`.
    - If a `finish` call appears alongside other tool calls, execute only the other calls, append their results, and continue. The `finish` content will be returned on a clean subsequent turn.
-   - If the response has no tool calls at all (just text), inject a reminder user message and continue.
+   - If the response has no tool calls at all (just text, or an empty response), the loop continues. The model will see its previous response in the next iteration and is expected to either call a tool or call `finish`.
 4. If there are non-`finish` tool calls, execute each one, append the results to the message list, and go to step 2.
 5. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
+
+> **Minimal termination.** `finish` is the only signal that ends the loop. Without a `finish` call, the loop keeps running until `max_iterations` is reached. There is no "fail if no `finish`" path — a model that returns text without calling `finish` will simply be re-asked.
 
 > **Mixed-turn behavior.** When the model calls `finish` together with other tools in the same turn, coreouto executes the other tools first and asks the LLM again rather than returning the `finish` content immediately. This keeps tool results in the conversation and avoids dropping unfinished work.
 
@@ -239,9 +240,9 @@ config = co.AgentConfig(
 )
 ```
 
-### Missing `finish` tool call reminder
+### What if the model forgets to call `finish`?
 
-Sometimes a model returns plain text without calling the `finish` tool. The agent handles this gracefully by injecting a user message that reminds the model to call the `finish` tool, then continues the loop. This prevents the agent from silently losing output when the model forgets the termination protocol.
+The loop keeps running. If the model returns plain text (or an empty response) without calling `finish`, the agent does not raise — it simply iterates again. The previous assistant message stays in the conversation so the model can see what it produced and correct course (call a tool or call `finish`). The only termination is `finish` itself, or `max_iterations` if set.
 
 ### Tracking finish events with hooks
 

@@ -8,7 +8,7 @@ from coreouto._types import AgentConfig
 from coreouto.agent import Agent, MaxIterationsError
 from coreouto.hooks import clear_hooks
 from coreouto.providers import clear_providers, register_provider
-from coreouto.tools import clear_tools
+from coreouto.tools import clear_tools, register_tool
 from tests.conftest import MockLLMResponse, MockProvider
 
 
@@ -37,7 +37,6 @@ def test_call_sync_returns_same_response_as_async():
 
     assert response.content == "done"
     assert response.iterations == 1
-    assert response.finish_called is True
     assert len(response.messages) == 3
     assert response.messages[0].role == "system"
     assert response.messages[1].role == "user"
@@ -58,26 +57,38 @@ async def test_call_sync_inside_running_loop_raises():
 
 
 def test_call_sync_with_override():
+    @register_tool("think")
+    def think() -> str:
+        return "thought"
+
     provider = MockProvider()
-    provider.queue(MockLLMResponse(content="a"))
-    provider.queue(MockLLMResponse(content="b"))
+    provider.queue(MockLLMResponse(tool_calls=[{"id": "t", "name": "think", "arguments": {}}]))
+    provider.queue(MockLLMResponse(tool_calls=[{"id": "t", "name": "think", "arguments": {}}]))
     register_provider("mock", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=5))
     with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
         agent.call_sync(
             "hello",
-            override=AgentConfig(name="ovr", model="m", provider="mock", max_iterations=2),
+            override=AgentConfig(
+                name="ovr", model="m", provider="mock", max_iterations=2, tools=["think"]
+            ),
         )
 
 
 def test_call_sync_raises_max_iterations_error():
+    @register_tool("think")
+    def think() -> str:
+        return "thought"
+
     provider = MockProvider()
     for _ in range(3):
-        provider.queue(MockLLMResponse(content="thinking..."))
+        provider.queue(MockLLMResponse(tool_calls=[{"id": "t", "name": "think", "arguments": {}}]))
     register_provider("mock", provider)
 
-    agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=2))
+    agent = Agent(
+        AgentConfig(name="test", model="m", provider="mock", max_iterations=2, tools=["think"])
+    )
     with pytest.raises(MaxIterationsError, match=r"max_iterations \(2\) reached"):
         agent.call_sync("hello")
 
