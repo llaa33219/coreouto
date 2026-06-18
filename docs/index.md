@@ -1,6 +1,6 @@
 # coreouto
 
-A minimal, extensible Python agent library. An agent is called with a message, runs an internal loop where it can use tools, and returns its response when the provider's end-of-turn field classifies as END (Anthropic `end_turn`, OpenAI Chat `stop`, OpenAI Responses `completed` without tool calls, Gemini `STOP` without tool calls, ...) — the text of that turn becomes the final answer. The rule is "if the value is not END, keep going". To output text without ending the loop, the model calls the built-in `continue_loop` tool. Everything else is an opt-in extension.
+A minimal, extensible Python agent library. An agent is called with a message, runs an internal loop where it can use tools, and returns its response when the model calls the built-in `finish` tool — the `content` argument of the `finish` call becomes the final answer. The rule is **model-driven**: the model declares its intent to end the loop through a tool call, not through a provider's natural end-of-turn signal. Unrecoverable provider terminations (token cap, refusal, content filter, server failure) still end the loop. To output text without ending the loop, the model calls the built-in `continue_loop` tool. Everything else is an opt-in extension.
 
 ```python
 import coreouto as co
@@ -33,7 +33,7 @@ pip install coreouto[all]
 
 ## The five philosophies
 
-**Minimalism.** coreouto implements only what an agent system needs to function. There is one loop, one termination rule ("if the provider's end-of-turn signal is not END, keep going"), and one inverse tool (`continue_loop`) for when the model wants to emit text without ending the loop. If a feature can live outside the library, it does. The core stays small so you can read the whole thing in an afternoon.
+**Minimalism.** coreouto implements only what an agent system needs to function. There is one loop, one termination rule (the model calls `finish` to close the loop; the provider's natural end-of-turn field without `finish` is treated as CONTINUE), and one inverse tool (`continue_loop`) for when the model wants to emit text without ending the loop. If a feature can live outside the library, it does. The core stays small so you can read the whole thing in an afternoon.
 
 **Extensibility.** Providers, tools, presets, and hooks are all open for extension. You can swap the LLM backend, add custom tools, define agent presets, and inject behavior at every stage of the loop. Nothing is locked down.
 

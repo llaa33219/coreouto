@@ -42,9 +42,12 @@ def _clean_state():
 def _terminate_response(content: str | None = None) -> MockLLMResponse:
     """Build a response that terminates the agent loop.
 
-    `stop_reason` is left as `None` so the conftest fixture can fill in the
-    provider's natural end-of-turn value (`end_turn` for Anthropic, `stop`
-    for OpenAI Chat, `completed` for OpenAI Responses, `STOP` for Gemini).
+    The `MockProvider` auto-injects a `finish` tool call (since the
+    `terminate` default is True) so the loop closes under coreouto's
+    model-driven policy. The response's `stop_reason` is left as `None`
+    so the conftest fixture can fill in the provider's natural end-of-turn
+    value (`end_turn` for Anthropic, `stop` for OpenAI Chat, `completed`
+    for OpenAI Responses, `STOP` for Gemini).
     """
     return MockLLMResponse(content=content or "")
 
@@ -53,7 +56,7 @@ def _continue_loop_tool_call(content: str, call_id: str = "cl_1") -> dict:
     return {"id": call_id, "name": "continue_loop", "arguments": {"content": content}}
 
 
-async def test_happy_path_text_only_terminates():
+async def test_finish_tool_terminates_loop_with_content_as_final_answer():
     provider = MockProvider()
     provider.queue(_terminate_response("done"))
     register_provider("mock", provider)
@@ -61,6 +64,8 @@ async def test_happy_path_text_only_terminates():
     agent = Agent(AgentConfig(name="test", model="m", provider="mock", max_iterations=10))
     response = await agent.call("hello")
 
+    # The model calls `finish` to terminate; the `content` argument of the
+    # `finish` call is the canonical final answer (NOT `response.content`).
     assert response.content == "done"
     assert response.iterations == 1
     assert response.stop_reason == "finish"
@@ -69,8 +74,11 @@ async def test_happy_path_text_only_terminates():
     assert response.messages[1].role == "user"
     assert response.messages[1].content == "hello"
     assert response.messages[2].role == "assistant"
-    assert response.messages[2].tool_calls is None
-    assert response.messages[2].content == "done"
+    # The assistant message now carries the `finish` tool call.
+    assert response.messages[2].tool_calls is not None
+    finish_call = response.messages[2].tool_calls[0]
+    assert finish_call.name == "finish"
+    assert finish_call.arguments["content"] == "done"
 
 
 async def test_multi_iteration_tool_then_text():
@@ -1313,8 +1321,13 @@ async def test_response_stop_reason_default_is_finish():
 
 
 def test_agent_config_with_continue_loop_tool_raises():
-    with pytest.raises(ValueError, match=r"'continue_loop' is a reserved tool name"):
+    with pytest.raises(ValueError, match=r"reserved tool name"):
         AgentConfig(name="test", model="m", provider="mock", tools=["continue_loop"])
+
+
+def test_agent_config_with_finish_tool_raises():
+    with pytest.raises(ValueError, match=r"reserved tool name"):
+        AgentConfig(name="test", model="m", provider="mock", tools=["finish"])
 
 
 # ---------------------------------------------------------------------------
@@ -1337,9 +1350,10 @@ async def test_anthropic_tool_use_stop_reason_continues_loop():
         MockLLMResponse(
             tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
             stop_reason="tool_use",
+            terminate=False,
         )
     )
-    provider.queue(MockLLMResponse(content="done", stop_reason="end_turn"))
+    provider.queue(_terminate_response("done"))
     register_provider("anthropic", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", tools=["echo"]))
@@ -1585,8 +1599,8 @@ async def test_anthropic_pause_turn_continues_loop():
     # coreouto treats it the same as `tool_use`: the loop should re-send
     # the response on the next iteration.
     provider = MockProvider()
-    provider.queue(MockLLMResponse(content="mid-turn", stop_reason="pause_turn"))
-    provider.queue(MockLLMResponse(content="done", stop_reason="end_turn"))
+    provider.queue(MockLLMResponse(content="mid-turn", stop_reason="pause_turn", terminate=False))
+    provider.queue(_terminate_response("done"))
     register_provider("anthropic", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
@@ -1951,9 +1965,10 @@ async def test_anthropic_pause_turn_with_tool_calls_continues():
         MockLLMResponse(
             tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
             stop_reason="pause_turn",
+            terminate=False,
         )
     )
-    provider.queue(MockLLMResponse(content="done", stop_reason="end_turn"))
+    provider.queue(_terminate_response("done"))
     register_provider("anthropic", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", tools=["echo"]))
@@ -1961,3 +1976,197 @@ async def test_anthropic_pause_turn_with_tool_calls_continues():
 
     assert response.iterations == 2
     assert response.content == "done"
+
+
+# ---------------------------------------------------------------------------
+# Model-driven termination: the `finish` tool
+# ---------------------------------------------------------------------------
+# The agent loop ends when the model calls the `finish` tool. Natural
+# end-of-turn signals from the provider (end_turn, stop, completed,
+# STOP) are NOT enough on their own — the loop re-prompts the model so
+# it can call more tools or call `finish` explicitly. This implements
+# the "explicitness" guarantee from coreouto's philosophy.
+
+
+async def test_finish_tool_call_ends_loop_regardless_of_provider_signal():
+    # A response that has only a `finish` tool call (no other tools)
+    # terminates the loop immediately, even if the provider's stop
+    # signal would otherwise be CONTINUE.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "f1", "name": "finish", "arguments": {"content": "all done"}}],
+            stop_reason="tool_use",
+            terminate=False,  # already has finish; don't auto-inject another
+        )
+    )
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.content == "all done"
+    assert response.stop_reason == "finish"
+
+
+async def test_finish_overrides_unrecoverable_provider_termination():
+    # If the model calls `finish` and the provider ALSO reports an
+    # unrecoverable termination (e.g. max_tokens was hit on the same
+    # turn), `finish` wins — the model declared its intent and the
+    # final answer is the `finish` content, not the empty response.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {"id": "f1", "name": "finish", "arguments": {"content": "truncated but done"}}
+            ],
+            stop_reason="max_tokens",
+            terminate=False,
+        )
+    )
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.content == "truncated but done"
+    assert response.stop_reason == "max_tokens"  # the underlying signal is preserved
+
+
+async def test_provider_end_turn_without_finish_keeps_looping():
+    # Under the model-driven policy, a text-only response (no `finish`
+    # call) on Anthropic's natural end_turn does NOT terminate the
+    # loop. The provider's natural end-of-turn signal is no longer
+    # sufficient on its own — the model must call `finish` to close
+    # the loop. Without `finish`, the loop just keeps calling the
+    # provider and hits `max_iterations`.
+    provider = MockProvider()
+    for _ in range(5):
+        provider.queue(
+            MockLLMResponse(
+                content="thinking...",
+                stop_reason="end_turn",
+                terminate=False,  # do NOT auto-inject finish
+            )
+        )
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", max_iterations=3))
+    with pytest.raises(MaxIterationsError):
+        await agent.call("hello")
+
+
+async def test_openai_responses_completed_without_finish_keeps_looping():
+    # OpenAI Responses' natural "completed" status is no longer
+    # sufficient to terminate the loop. The model must call `finish`.
+    provider = MockProvider()
+    for _ in range(5):
+        provider.queue(
+            MockLLMResponse(
+                content="thinking...",
+                stop_reason="completed",
+                terminate=False,
+            )
+        )
+    register_provider("openai-response", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai-response", max_iterations=2))
+    with pytest.raises(MaxIterationsError):
+        await agent.call("hello")
+
+
+async def test_google_stop_without_finish_keeps_looping():
+    provider = MockProvider()
+    for _ in range(5):
+        provider.queue(
+            MockLLMResponse(
+                content="thinking...",
+                stop_reason="STOP",
+                terminate=False,
+            )
+        )
+    register_provider("google", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="google", max_iterations=2))
+    with pytest.raises(MaxIterationsError):
+        await agent.call("hello")
+
+
+async def test_openai_chat_stop_without_finish_keeps_looping():
+    provider = MockProvider()
+    for _ in range(5):
+        provider.queue(
+            MockLLMResponse(
+                content="thinking...",
+                stop_reason="stop",
+                terminate=False,
+            )
+        )
+    register_provider("openai", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai", max_iterations=2))
+    with pytest.raises(MaxIterationsError):
+        await agent.call("hello")
+
+
+async def test_finish_with_other_tools_still_terminates_and_takes_finish_content():
+    # The model can call `finish` alongside other tool calls in the
+    # same turn (uncommon but valid). The loop ends, and the final
+    # answer is the `finish` content (NOT the response's text).
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="some text",
+            tool_calls=[
+                {"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}},
+                {"id": "f1", "name": "finish", "arguments": {"content": "the answer"}},
+            ],
+            stop_reason="tool_use",
+            terminate=False,
+        )
+    )
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.content == "the answer"
+
+
+async def test_continue_loop_then_finish_terminates_with_finish_content():
+    # A typical agent flow: model calls continue_loop to share progress,
+    # then calls finish. The progress text from continue_loop is
+    # recorded in the messages; the final answer is the finish content.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[
+                {
+                    "id": "cl_1",
+                    "name": "continue_loop",
+                    "arguments": {"content": "still working..."},
+                }
+            ],
+            stop_reason="tool_use",
+            terminate=False,
+        )
+    )
+    provider.queue(_terminate_response("final answer"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "final answer"
+    # The progress message is preserved in the conversation history.
+    tool_msgs = [m for m in response.messages if m.role == "tool" and m.name == "continue_loop"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].content == "still working..."

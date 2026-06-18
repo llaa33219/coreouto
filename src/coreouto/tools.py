@@ -8,7 +8,7 @@ from typing import Any, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict
 
-RESERVED_TOOL_NAMES = frozenset({"continue_loop"})
+RESERVED_TOOL_NAMES = frozenset({"continue_loop", "finish"})
 
 
 class Tool(BaseModel):

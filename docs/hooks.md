@@ -11,12 +11,12 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `before_tool_call` | Before each tool executes            | `name`, `arguments`                                    |
 | `after_tool_call`  | After each tool result               | `name`, `result`                                       |
 | `on_iteration`     | At the end of each loop iteration    | `iteration`, `messages`, `response`                    |
-| `on_finish`        | When the loop terminates (the provider emitted its end-of-turn signal) | `content`, `messages`, `iterations` |
+| `on_finish`        | When the loop terminates (the model called `finish`, or an unrecoverable provider termination was reached) | `content`, `messages`, `iterations` |
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
 
 ### The on_finish event
 
-Fires when the loop terminates, which happens when the provider emits its native end-of-turn signal (`end_turn` / `stop` / `completed` / `STOP` for a clean finish, or `max_tokens` / `length` / `refusal` / `content_filter` / `incomplete` / `failed` / `cancelled` for a non-clean termination). The `content` kwarg is the text of that final turn. There is no `tool_call_id` because the loop did not end because of a tool call — it ended because the model emitted its end-of-turn signal. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
+Fires when the loop terminates, which happens when the model calls the `finish` tool (a clean termination) or when an unrecoverable provider termination is reached (`max_tokens` / `length` / `refusal` / `content_filter` / `incomplete:content_filter` / `SAFETY` / `failed` / `cancelled`). The `content` kwarg is the final answer — the `content` argument of the `finish` call, or the response text as a fallback when the loop ended via a provider termination. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
 
 ## Registering a hook
 

@@ -1,8 +1,13 @@
 # Agent
 
-The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the provider's end-of-turn signal classifies as END — the text of that turn becomes the final answer. The rule is "if the value is not END, keep going", and the END set is defined per-provider from each provider's documented vocabulary. To output text without ending the loop (e.g. share progress before calling more tools), the model calls the built-in `continue_loop` tool.
+The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model explicitly calls the built-in `finish` tool. The `content` argument of the `finish` call is the canonical final answer. This is coreouto's **model-driven termination policy**: the model's intent to end the loop is declared through a tool call, not inferred from a provider signal.
 
-The end-of-turn field is provider-specific: Anthropic uses `stop_reason`, OpenAI Chat Completions uses `finish_reason`, OpenAI Responses uses `status` (normalized by coreouto to `completed` / `incomplete:<reason>`), and Google Gemini uses `finishReason`. See [How the loop works](#how-the-loop-works) for the exact END / CONTINUE values per provider — including the "looks like END but is actually CONTINUE" cases like Anthropic's `pause_turn` and the recoverable `incomplete:max_output_tokens` on OpenAI Responses.
+To output text without ending the loop (e.g. share progress before calling more tools), the model calls the built-in `continue_loop` tool. The two reserved tools have opposite effects on the loop:
+
+- `finish(content=...)` — end the loop; the `content` is the final answer.
+- `continue_loop(content=...)` — show `content` to the user mid-task; the loop continues.
+
+Both names are reserved — you cannot register your own tool under either name. The agent loop injects them automatically into every call.
 
 ## Creating an agent
 
@@ -44,7 +49,7 @@ agent = co.Agent(config)
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
 
-If `system_prompt` is `None`, a default system prompt is injected automatically that tells the model to use tools and explains the `continue_loop` tool. The model does not need to know how the loop terminates — coreouto reads the provider's end-of-turn signal directly. For the full text of the default and guidance on writing your own, see [System prompts](prompts.md).
+If `system_prompt` is `None`, a default system prompt is injected automatically that tells the model to use tools and explains both reserved tools: `finish` (end the loop) and `continue_loop` (share progress without ending). The default prompt explicitly tells the model that a text-only turn without `finish` will be re-prompted, so the model must call `finish` to actually close the loop. For the full text of the default and guidance on writing your own, see [System prompts](prompts.md).
 
 ## Calling the agent
 
@@ -171,7 +176,7 @@ If you need a concurrency cap, write a hook on `BEFORE_TOOL_CALL` that records s
 | Field            | Type              | Description                                          |
 |------------------|-------------------|------------------------------------------------------|
 | `content`        | `str`             | The text of the model's final turn (the turn that ended the loop) |
-| `stop_reason`    | `Literal["finish", "max_iterations", "max_tokens", "refusal", "content_filter", "length", "incomplete", "failed", "cancelled"]` | Why the loop terminated. `"finish"` for a clean end-of-turn, `"max_iterations"` when the iteration cap was hit. Provider-specific non-clean terminations are also surfaced: `"max_tokens"` / `"length"` (token cap), `"refusal"` (Anthropic refusal), `"content_filter"` (OpenAI content filter), `"incomplete"` (OpenAI Responses incomplete), `"failed"` / `"cancelled"` (OpenAI Responses terminal states). |
+| `stop_reason`    | `Literal["finish", "max_iterations", "max_tokens", "refusal", "content_filter", "length", "incomplete", "failed", "cancelled"]` | Why the loop terminated. `"finish"` when the model called the `finish` tool, `"max_iterations"` when the iteration cap was hit. Provider-specific non-clean terminations are also surfaced: `"max_tokens"` / `"length"` (token cap), `"refusal"` (Anthropic refusal), `"content_filter"` (OpenAI content filter), `"incomplete"` (OpenAI Responses incomplete), `"failed"` / `"cancelled"` (OpenAI Responses terminal states). |
 | `messages`       | `list[Message]`   | Full message history (system, user, assistant, tool) |
 | `iterations`     | `int`             | How many LLM calls were made                         |
 | `usage`          | `list[Usage]`     | Token usage per LLM call                             |
@@ -202,37 +207,27 @@ config = co.AgentConfig(
 ## How the loop works
 
 1. Build the message list: system prompt (default or configured) + history (if any) + user message. Drain any pending user messages injected via `Agent.inject_user_message`.
-2. Send the messages and resolved tool definitions to the LLM via the registered provider.
+2. Send the messages and resolved tool definitions (the user's tools + `continue_loop` + `finish`) to the LLM via the registered provider.
 3. Append the assistant's response (with any tool calls) to the message list.
 4. Fire the `on_iteration` hook.
-5. **Classify the provider's end-of-turn signal** to decide whether the loop ends. The rule is: **if the value is not END, keep going.** The END set is defined per-provider from each provider's documented end-of-turn vocabulary:
+5. **Decide whether the loop ends.** Under the **model-driven termination policy**, the loop ends iff one of these is true:
+   - The assistant's response contains a `finish` tool call. The `content` argument of the first `finish` call becomes the final answer.
+   - The provider's stop field carries an **unrecoverable** value — `max_tokens`, `refusal`, `length`, `content_filter`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE`, `failed`, `cancelled`, `incomplete:content_filter`. These cannot be re-prompted away, so the loop ends even without a `finish` call.
+   - `max_iterations` is reached (raises `MaxIterationsError`).
 
-   | Provider | Native field | END values (loop terminates) | CONTINUE values |
-   |---|---|---|---|
-   | Anthropic | `stop_reason` | `"end_turn"`, `"max_tokens"`, `"stop_sequence"`, `"refusal"` | `"tool_use"`, `"pause_turn"` |
-   | OpenAI Chat Completions | `finish_reason` | `"stop"`, `"length"`, `"content_filter"` | `"tool_calls"`, legacy `"function_call"` (only when tool calls were actually produced) |
-   | OpenAI Responses | `status` (normalized to `completed` or `incomplete:<reason>`) | `"failed"`, `"cancelled"`, `"incomplete:content_filter"` — unconditional. `"incomplete"` / `"incomplete:max_output_tokens"` are END only when no tool calls were produced. | `incomplete:*` (with tool calls), `completed` (with tool calls) |
-   | Google Gemini | `finish_reason` (enum) | `MAX_TOKENS`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE` — unconditional | `STOP`, `FINISH_REASON_UNSPECIFIED`, `UNEXPECTED_TOOL_CALL`, `MALFORMED_FUNCTION_CALL` — END only when no tool calls were produced |
-   | any other provider | `stop_reason` (treated as opaque) | unknown — falls back to the historical "no tool calls = end" rule | |
-
-   **A few values that look like END but are actually CONTINUE** — these were the source of premature terminations in earlier coreouto versions:
-
-   - **Anthropic `pause_turn`** — emitted when the server-side sampling loop hits its iteration limit (default 10) while running server tools like web search / web fetch. The official guidance is to send the assistant response back as-is in a new request so the loop can continue. coreouto treats it the same as `tool_use`.
-   - **OpenAI Chat legacy `function_call`** — the singular predecessor of the modern `tool_calls` field. It's a "I called a function" signal, not a finish signal. coreouto continues the loop so the function call can be executed (provided the provider adapter surfaces it as a `ToolCall`).
-   - **OpenAI Responses `incomplete` / `incomplete:max_output_tokens`** — recoverable when the response contains a `function_call` output item. The model emitted the call before the run was cut off, so coreouto still executes it. The truly unrecoverable `incomplete:content_filter` is still an unconditional END.
-   - **Google `FINISH_REASON_UNSPECIFIED` / `UNEXPECTED_TOOL_CALL` / `MALFORMED_FUNCTION_CALL`** — placeholder / parse-failure values. If the SDK couldn't classify the finish reason but a valid `function_call` part is present, coreouto runs it. Unrecoverable signals like `SAFETY` and `MAX_TOKENS` are still unconditional END.
+   Crucially, the provider's **natural** end-of-turn signal (`end_turn`, `stop`, `completed`, `STOP`, `pause_turn`, `tool_use`, `tool_calls`, ...) is **not** sufficient on its own. The loop re-prompts the model so it can call more tools or call `finish`. This implements coreouto's **explicitness** guarantee: the model declares its intent to end the loop, and the agent doesn't infer termination from a provider signal that the model didn't author.
 
 6. **If the loop ends**:
-   - The response's `content` becomes `Response.content`.
-   - `Response.stop_reason` is one of the literal values listed in [`Response.stop_reason`](#the-response-object) — usually `"finish"`, but provider-specific non-clean terminations (length cap, refusal, content filter, incomplete, failed, cancelled) are surfaced verbatim so callers can distinguish them.
+   - The `content` argument of the first `finish` tool call becomes `Response.content`. If the loop ended via an unrecoverable provider termination without a `finish` call, `Response.content` falls back to the response's text (often empty).
+   - `Response.stop_reason` is one of the literal values listed in [`Response.stop_reason`](#the-response-object) — `"finish"` when the model called `finish`, or a non-clean literal (`max_tokens`, `refusal`, `length`, `content_filter`, `incomplete`, `failed`, `cancelled`) when the provider terminated the turn.
    - The `on_finish` hook fires with `content`, `messages`, and `iterations` (no `tool_call_id`).
    - The `Response` is returned to the caller.
-7. **If the loop continues**, execute each tool call (this includes the built-in `continue_loop` — the loop just keeps going), append the results, and return to step 2.
+7. **If the loop continues**, execute each non-`finish` tool call (this includes the built-in `continue_loop`), append the results, and return to step 2.
 8. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
 
-> **Provider-driven termination.** The loop ends when the underlying provider's end-of-turn field carries one of the documented END values (see the table above). coreouto does not infer termination from "no tool calls" — it defers to the provider's signal. If the model never produces an end-of-turn signal, the loop keeps running until `max_iterations` is reached.
+> **Model-driven termination.** The loop ends when the model calls `finish` — the only signal the model authors. A provider's natural end-of-turn field without a `finish` call is treated as CONTINUE, not END. This is the explicitness guarantee from [coreouto's philosophy](philosophy.md#explicitness): the system does what you tell it and nothing more.
 
-> **`continue_loop` is not a finish signal.** When the model calls `continue_loop` (with or without other tool calls in the same turn), coreouto executes it like any other tool, appends the result, and continues the loop. The loop only ends when the provider emits a real end-of-turn signal on a turn with no tool calls.
+> **`continue_loop` keeps the loop running; `finish` ends it.** When the model calls `continue_loop` (with or without other tool calls in the same turn), coreouto executes it like any other tool, appends the result, and continues the loop. The loop only ends when the model calls `finish`.
 
 ## Hooks during the loop
 
@@ -243,7 +238,7 @@ Seven hook events fire during the loop. See [Hooks](hooks.md) for details:
 - `before_tool_call` -- before each tool execution
 - `after_tool_call` -- after each tool result
 - `on_iteration` -- at the end of each iteration
-- `on_finish` -- when the loop terminates (the provider emitted its end-of-turn signal)
+- `on_finish` -- when the loop terminates (the model called the `finish` tool, or an unrecoverable provider termination was reached)
 - `on_user_injection` -- when a user message is injected via `Agent.inject_user_message`
 
 ## Provider config
@@ -265,7 +260,7 @@ config = co.AgentConfig(
 
 ### What if the model never terminates?
 
-The loop keeps calling the LLM. The agent does not raise on a text-only turn — the provider's end-of-turn signal is the termination trigger, not an error. The previous assistant message stays in the conversation so the model can see what it produced and either call `continue_loop` (if it wants to emit more text and keep going) or simply produce a text-only turn on a later iteration to end the loop. The only terminations are the provider's end-of-turn signal, or `max_iterations` if set (in which case `MaxIterationsError` is raised).
+The loop keeps calling the LLM. Under the model-driven termination policy, the only ways the loop can end are: the model calls `finish`, the provider emits an unrecoverable termination, or `max_iterations` is reached. A text-only turn without `finish` is re-prompted — the model gets another chance to call more tools or call `finish`. The previous assistant message stays in the conversation so the model can see what it produced and adjust on the next iteration.
 
 ### Tracking finish events with hooks
 

@@ -114,10 +114,17 @@ class TestRegisterTool:
         assert decorated is orig
 
     def test_register_tool_continue_loop_name_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"'continue_loop' is a reserved tool name"):
+        with pytest.raises(ValueError, match=r"reserved tool name"):
 
             @register_tool("continue_loop")
             def continue_loop_tool(x: int) -> int:
+                return x
+
+    def test_register_tool_finish_name_raises(self) -> None:
+        with pytest.raises(ValueError, match=r"reserved tool name"):
+
+            @register_tool("finish")
+            def finish_tool(x: int) -> int:
                 return x
 
 

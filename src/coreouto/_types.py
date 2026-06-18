@@ -206,12 +206,17 @@ class AgentConfig(BaseModel):
     parallel_tool_calls: bool = False
 
     @model_validator(mode="after")
-    def _continue_loop_not_user_tool(self) -> AgentConfig:
-        if "continue_loop" in self.tools:
+    def _reserved_tools_not_user_tools(self) -> AgentConfig:
+        from coreouto.tools import RESERVED_TOOL_NAMES
+
+        conflicts = set(self.tools) & RESERVED_TOOL_NAMES
+        if conflicts:
+            names = ", ".join(sorted(repr(n) for n in conflicts))
             raise ValueError(
-                "'continue_loop' is a reserved tool name injected automatically by the agent "
-                "loop. Remove it from `tools`. The `continue_loop` tool sends text to the "
-                "user mid-task without ending the loop."
+                f"{names} are reserved tool names injected automatically by the agent "
+                f"loop. Remove them from `tools`. The `continue_loop` tool sends text to "
+                f"the user mid-task without ending the loop; the `finish` tool ends the "
+                f"loop and returns its argument as the final answer."
             )
         return self
 

@@ -8,7 +8,7 @@
 
 Built on five philosophies: **minimalism, extensibility, explicitness, fragmentation, conciseness.**
 
-The whole library reduces to one idea: an agent is called with a message, runs an internal loop, and returns its response when the provider's end-of-turn signal classifies as END — the text of that turn becomes the final answer. The exact field and value depend on the provider: Anthropic's `stop_reason` (`end_turn`, `max_tokens`, `stop_sequence`, `refusal`), OpenAI Chat Completions' `finish_reason` (`stop`, `length`, `content_filter`), OpenAI Responses' `status` (`failed`, `cancelled`, `incomplete:content_filter`), Google Gemini's `finishReason` (`MAX_TOKENS`, `SAFETY`, ...). To output text without ending the loop (e.g. share progress before calling more tools), the model calls the `continue_loop` tool. Everything else — providers, tools, presets, hooks, multi-agent — is an opt-in extension.
+The whole library reduces to one idea: an agent is called with a message, runs an internal loop, and returns its response when the model calls the `finish` tool — the `content` argument of the `finish` call becomes the final answer. The model's intent to end the loop is declared through a tool call, not inferred from a provider signal. Unrecoverable provider terminations (token cap, refusal, content filter, server-side failure) still end the loop without a `finish` call. To output text without ending the loop (e.g. share progress before calling more tools), the model calls the `continue_loop` tool. Everything else — providers, tools, presets, hooks, multi-agent — is an opt-in extension.
 
 ```python
 import os
