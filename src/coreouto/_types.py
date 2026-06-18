@@ -4,7 +4,17 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-StopReason = Literal["finish", "max_iterations"]
+StopReason = Literal[
+    "finish",
+    "max_iterations",
+    "max_tokens",
+    "refusal",
+    "content_filter",
+    "length",
+    "incomplete",
+    "failed",
+    "cancelled",
+]
 
 
 class ToolCall(BaseModel):
@@ -200,9 +210,8 @@ class AgentConfig(BaseModel):
         if "continue_loop" in self.tools:
             raise ValueError(
                 "'continue_loop' is a reserved tool name injected automatically by the agent "
-                "loop. Remove it from `tools`. The loop ends when the model produces a turn "
-                "with no tool calls; call the `continue_loop` tool to output text without "
-                "ending the loop."
+                "loop. Remove it from `tools`. The `continue_loop` tool sends text to the "
+                "user mid-task without ending the loop."
             )
         return self
 

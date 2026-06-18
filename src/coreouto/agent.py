@@ -35,14 +35,179 @@ from coreouto.tools import Tool, get_tool
 CONTINUE_LOOP_TOOL_NAME = "continue_loop"
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
 
+# Provider-specific sets of stop_reason / finish_reason / status values that mean
+# "the loop should end now". For Anthropic and OpenAI Chat Completions, the
+# END/CONTINUE split is encoded in the value itself (`tool_use` / `tool_calls`
+# are the only CONTINUE values); for Google Gemini and OpenAI Responses, the
+# field always carries an END-style value, and the loop must additionally
+# consult whether the response contained tool calls.
+_ANTHROPIC_TERMINATE_REASONS = frozenset(
+    {"end_turn", "max_tokens", "stop_sequence", "pause_turn", "refusal"}
+)
+_ANTHROPIC_CONTINUE_REASONS = frozenset({"tool_use"})
+
+_OPENAI_CHAT_TERMINATE_REASONS = frozenset({"stop", "length", "content_filter", "function_call"})
+_OPENAI_CHAT_CONTINUE_REASONS = frozenset({"tool_calls"})
+
+# OpenAI Responses API: status="completed" is the natural end-of-turn signal,
+# and tool calls live in `response.output` items. Other terminal statuses
+# (failed / cancelled / incomplete) are also END regardless of tool_calls.
+_OPENAI_RESPONSES_TERMINATE_STATUSES = frozenset(
+    {
+        "failed",
+        "cancelled",
+        "incomplete",
+        "incomplete:max_output_tokens",
+        "incomplete:content_filter",
+    }
+)
+
+# Google Gemini: every documented `finish_reason` is a terminal signal. The
+# SDK has no "I called a tool" finish reason — when the model calls a tool,
+# `finish_reason="STOP"` and the function call appears in
+# `candidate.content.parts`. So for Gemini the loop must additionally consult
+# `has_tool_calls` (STOP without tool calls = end; STOP with tool calls =
+# continue; any other finish_reason = end regardless of tool_calls).
+_GOOGLE_TERMINATE_REASONS = frozenset(
+    {
+        "STOP",
+        "MAX_TOKENS",
+        "SAFETY",
+        "RECITATION",
+        "LANGUAGE",
+        "OTHER",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "MALFORMED_FUNCTION_CALL",
+        "UNEXPECTED_TOOL_CALL",
+        "FINISH_REASON_UNSPECIFIED",
+        "IMAGE_SAFETY",
+        "IMAGE_PROHIBITED_CONTENT",
+        "IMAGE_RECITATION",
+        "IMAGE_OTHER",
+        "NO_IMAGE",
+    }
+)
+
+
+def _should_terminate(provider: str, stop_reason: str | None, has_tool_calls: bool) -> bool:
+    """Classify a provider response to decide whether the agent loop ends now.
+
+    Rule: "if it's not END, keep going." The END set is defined per-provider
+    from each provider's documented end-of-turn vocabulary. For Google Gemini
+    and OpenAI Responses the field is always END-like, so `has_tool_calls` is
+    consulted as a second condition to disambiguate "natural finish" from
+    "model called a tool, loop should continue".
+
+    - **Anthropic** (`stop_reason`): `end_turn`, `max_tokens`, `stop_sequence`,
+      `pause_turn`, `refusal` = END. `tool_use` = CONTINUE. Any other value
+      (including `None`) = CONTINUE.
+    - **OpenAI Chat Completions** (`finish_reason`): `stop`, `length`,
+      `content_filter`, `function_call` = END. `tool_calls` = CONTINUE. Any
+      other value = CONTINUE.
+    - **OpenAI Responses API** (`status`): `failed`, `cancelled`, `incomplete`
+      (and the `incomplete:<reason>` variants) = END. `completed` is END
+      only when there are no tool calls in the response.
+    - **Google Gemini** (`finish_reason`): any explicit non-STOP value
+      (`MAX_TOKENS`, `SAFETY`, `RECITATION`, ...) = END. `STOP` (or
+      `FINISH_REASON_UNSPECIFIED` / `None`) is END only when there are no
+      tool calls in the response.
+
+    Unknown providers fall back to the historical "no tool calls = end" rule
+    so that custom providers without documented stop_reason semantics keep
+    working.
+    """
+    if provider == "anthropic":
+        # Trust stop_reason: explicit END values end the loop; tool_use keeps
+        # the loop going; anything else is treated as CONTINUE so we never
+        # silently end the loop on an unrecognized value.
+        return stop_reason in _ANTHROPIC_TERMINATE_REASONS
+
+    if provider == "openai":
+        return stop_reason in _OPENAI_CHAT_TERMINATE_REASONS
+
+    if provider == "openai-response":
+        if stop_reason in _OPENAI_RESPONSES_TERMINATE_STATUSES:
+            return True
+        # `completed` (or any other non-terminal status) — END only if no tool
+        # calls were produced.
+        return not has_tool_calls
+
+    if provider == "google":
+        if stop_reason in _GOOGLE_TERMINATE_REASONS and stop_reason != "STOP":
+            # Explicit non-STOP terminal reason (SAFETY, MAX_TOKENS, ...).
+            return True
+        # STOP / None / unknown — END only if no tool calls were produced.
+        return not has_tool_calls
+
+    # Unknown provider: preserve historical "no tool calls = end" behavior.
+    return not has_tool_calls
+
+
+def _classify_finish(provider: str, stop_reason: str | None) -> StopReason:
+    """Map a raw provider stop_reason to the Response.stop_reason literal.
+
+    `"finish"` is the generic "the model finished naturally" value. The other
+    literals surface non-clean terminations so callers can distinguish a
+    refusal from a length cap from a successful finish.
+    """
+    if provider == "anthropic":
+        if stop_reason == "max_tokens":
+            return "max_tokens"
+        if stop_reason == "refusal":
+            return "refusal"
+        return "finish"
+
+    if provider == "openai":
+        if stop_reason == "length":
+            return "length"
+        if stop_reason == "content_filter":
+            return "content_filter"
+        return "finish"
+
+    if provider == "openai-response":
+        if stop_reason == "failed":
+            return "failed"
+        if stop_reason == "cancelled":
+            return "cancelled"
+        if stop_reason and stop_reason.startswith("incomplete"):
+            return "incomplete"
+        return "finish"
+
+    # Google and unknown providers don't surface distinct terminator categories
+    # through stop_reason — they all collapse to "finish" or get reflected
+    # verbatim in `Response.stop_reason` if a hook needs to see it.
+    return "finish"
+
+    if provider == "openai":
+        if stop_reason == "length":
+            return "length"
+        if stop_reason == "content_filter":
+            return "content_filter"
+        return "finish"
+
+    if provider == "openai-response":
+        if stop_reason == "failed":
+            return "failed"
+        if stop_reason == "cancelled":
+            return "cancelled"
+        if stop_reason and stop_reason.startswith("incomplete"):
+            return "incomplete"
+        return "finish"
+
+    # Google and unknown providers don't surface distinct terminator categories
+    # through stop_reason — they all collapse to "finish" or get reflected
+    # verbatim in `Response.stop_reason` if a hook needs to see it.
+    return "finish"
+
 
 _CONTINUE_LOOP_TOOL = Tool(
     name=CONTINUE_LOOP_TOOL_NAME,
     description=(
-        "Send text to the user without ending the agent loop. Use for mid-task "
+        "Send text to the user mid-task without ending the agent loop. Use for "
         "progress updates when you still intend to call more tools. The `content` "
-        "argument is shown to the user; the loop continues. To end the loop, "
-        "respond with text and no tool call — do NOT use this tool for that."
+        "argument is shown to the user; the loop continues."
     ),
     parameters={
         "type": "object",
@@ -61,17 +226,8 @@ _CONTINUE_LOOP_TOOL = Tool(
 
 _DEFAULT_SYSTEM_PROMPT = (
     "You are an agent. Use tools to gather information as needed.\n\n"
-    "The loop ends when your turn has NO tool calls — that text becomes the final "
-    "answer returned to the user. To finish, respond with text only.\n\n"
-    "The `continue_loop` tool does the opposite: it sends text to the user mid-task "
-    "but keeps the loop running for more tools. Use it for progress updates before "
-    "calling more tools.\n\n"
-    "Example:\n"
-    "  User: Find news and summarize.\n"
-    "  You: [search]                          -> loop continues\n"
-    '  You: continue_loop(content="Found 3 articles.")  -> text to user, loop continues\n'
-    "  You: [fetch article]                   -> loop continues\n"
-    "  You: Here is a summary.                -> no tool call -> loop ends, returned to user\n"
+    "The `continue_loop` tool sends text to the user mid-task but keeps the loop "
+    "running for more tools. Use it for progress updates before calling more tools.\n"
 )
 
 
@@ -257,8 +413,7 @@ class Agent:
 
             tool_calls = list(response.tool_calls)
 
-            if not tool_calls:
-                # No tool call = loop terminates. Use the model's text as the final answer.
+            if _should_terminate(cfg.provider, response.stop_reason, bool(tool_calls)):
                 final_answer = response.content or ""
 
                 await trigger(
@@ -267,7 +422,7 @@ class Agent:
                     messages=messages,
                     iterations=iterations,
                 )
-                stop_reason: StopReason = "finish"
+                stop_reason: StopReason = _classify_finish(cfg.provider, response.stop_reason)
                 return Response(
                     content=final_answer,
                     messages=messages,

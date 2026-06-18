@@ -13,6 +13,23 @@ from typing import Any
 
 import pytest
 
+# Per-provider natural end-of-turn values. coreouto maps each provider's
+# native field (Anthropic `stop_reason`, OpenAI Chat `finish_reason`,
+# OpenAI Responses `status`, Gemini `finishReason`) into a single string
+# exposed on `LLMResponse.stop_reason`. Tests use this table so a response
+# without an explicit `stop_reason` still terminates the loop when run
+# against any of the supported providers.
+_PROVIDER_END_REASONS: dict[str, str] = {
+    "anthropic": "end_turn",
+    "openai": "stop",
+    "openai-response": "completed",
+    "google": "STOP",
+}
+
+# Sentinel for `MockLLMResponse.stop_reason`: distinguishes "use the
+# provider's default end-of-turn value" from "the value is literally `None`".
+_UNSET: Any = object()
+
 
 @dataclass
 class MockLLMResponse:
@@ -20,14 +37,24 @@ class MockLLMResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    stop_reason: str | None = "end_turn"
+    # Default (`_UNSET`) means "fill in the provider's natural end-of-turn
+    # value when the response is consumed". Tests that want a non-terminating
+    # or provider-specific stop_reason (e.g. `"tool_use"`, `"SAFETY"`, or
+    # `None` to simulate a legacy SDK) set it explicitly.
+    stop_reason: Any = _UNSET
 
 
 class MockProvider:
     """Provider that yields scripted LLM responses, recording every call."""
 
-    def __init__(self, responses: list[MockLLMResponse] | None = None) -> None:
+    def __init__(
+        self,
+        responses: list[MockLLMResponse] | None = None,
+        *,
+        provider_name: str | None = None,
+    ) -> None:
         self._responses: list[MockLLMResponse] = list(responses or [])
+        self._provider_name = provider_name
         self.calls: list[dict[str, Any]] = []
         self._index = 0
         self.formatted_assistants: list[Any] = []
@@ -36,7 +63,7 @@ class MockProvider:
     def queue(self, *responses: MockLLMResponse) -> None:
         self._responses.extend(responses)
 
-    def _next(self) -> MockLLMResponse:
+    def _next(self, provider: str) -> MockLLMResponse:
         if self._index >= len(self._responses):
             raise AssertionError(
                 f"MockProvider exhausted: requested response #{self._index + 1} "
@@ -45,6 +72,8 @@ class MockProvider:
             )
         r = self._responses[self._index]
         self._index += 1
+        if r.stop_reason is _UNSET:
+            r.stop_reason = _PROVIDER_END_REASONS.get(provider)
         return r
 
     async def create(
@@ -67,7 +96,7 @@ class MockProvider:
                 "kwargs": kwargs,
             }
         )
-        r = self._next()
+        r = self._next(self._provider_name or "")
         return LLMResponse(
             content=r.content,
             tool_calls=list(r.tool_calls),

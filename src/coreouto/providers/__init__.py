@@ -12,6 +12,11 @@ _PROVIDERS: dict[str, Provider] = {}
 
 def register_provider(name: str, provider: Provider) -> None:
     _PROVIDERS[name] = provider
+    # Stash the registration name on the provider instance so test doubles
+    # (and any provider that wants it) can recover which name they were
+    # registered under. This is a no-op for real providers that don't read
+    # the attribute; it's a convenience for `MockProvider` in tests.
+    provider._provider_name = name
 
 
 def get_provider(name: str) -> Provider:
