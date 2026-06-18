@@ -1,6 +1,6 @@
 # coreouto
 
-A minimal, extensible Python agent library. An agent is called with a message, runs an internal loop where it can use tools, and returns its response when the model calls the built-in `finish` tool — the `content` argument of the `finish` call becomes the final answer. The rule is **model-driven**: the model declares its intent to end the loop through a tool call, not through a provider's natural end-of-turn signal. Unrecoverable provider terminations (token cap, refusal, content filter, server failure) still end the loop. To output text without ending the loop, the model calls the built-in `continue_loop` tool. Everything else is an opt-in extension.
+A minimal, extensible Python agent library. An agent is called with a message, runs an internal loop where it can use tools, and returns its response when the model calls the built-in `finish` tool — the `content` argument of the `finish` call becomes the final answer. The termination policy is **two-step** (modeled on [pi-mono](https://github.com/badlogic/pi-mono)): if the model's turn ends with a natural end-of-turn signal but no `finish` call, the loop injects a confirmation user message and re-prompts; the model's next turn either calls `finish` (terminate) or calls more tools (continue). Unrecoverable provider terminations (token cap, refusal, content filter, server failure) still end the loop. To output text without ending the loop, the model calls the built-in `continue_loop` tool. Everything else is an opt-in extension.
 
 ```python
 import coreouto as co

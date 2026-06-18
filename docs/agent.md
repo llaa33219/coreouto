@@ -206,28 +206,32 @@ config = co.AgentConfig(
 
 ## How the loop works
 
+coreouto uses a **two-step termination policy** modeled on the `terminate` flag in [pi-mono](https://github.com/badlogic/pi-mono). The model declares its intent to end the loop through a tool call, not through a provider's natural end-of-turn signal.
+
 1. Build the message list: system prompt (default or configured) + history (if any) + user message. Drain any pending user messages injected via `Agent.inject_user_message`.
 2. Send the messages and resolved tool definitions (the user's tools + `continue_loop` + `finish`) to the LLM via the registered provider.
 3. Append the assistant's response (with any tool calls) to the message list.
 4. Fire the `on_iteration` hook.
-5. **Decide whether the loop ends.** Under the **model-driven termination policy**, the loop ends iff one of these is true:
-   - The assistant's response contains a `finish` tool call. The `content` argument of the first `finish` call becomes the final answer.
-   - The provider's stop field carries an **unrecoverable** value — `max_tokens`, `refusal`, `length`, `content_filter`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE`, `failed`, `cancelled`, `incomplete:content_filter`. These cannot be re-prompted away, so the loop ends even without a `finish` call.
-   - `max_iterations` is reached (raises `MaxIterationsError`).
+5. **Classify the response into one of four branches**:
 
-   Crucially, the provider's **natural** end-of-turn signal (`end_turn`, `stop`, `completed`, `STOP`, `pause_turn`, `tool_use`, `tool_calls`, ...) is **not** sufficient on its own. The loop re-prompts the model so it can call more tools or call `finish`. This implements coreouto's **explicitness** guarantee: the model declares its intent to end the loop, and the agent doesn't infer termination from a provider signal that the model didn't author.
+   - **`finish` was called** — terminate. The `content` argument of the first `finish` call becomes the final answer. If the response also carried non-`finish` tool calls on an unrecoverable provider termination, those tool calls are dropped (the provider refused to deliver the response, so coreouto refuses to execute its tool calls).
+   - **Unrecoverable provider termination without `finish` and without other tool calls** — `max_tokens`, `refusal`, `length`, `content_filter`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE`, `failed`, `cancelled`, `incomplete:content_filter`. The provider refused to deliver; the loop ends and surfaces the provider signal on `Response.stop_reason`. `Response.content` falls back to the response's text (often empty).
+   - **Unrecoverable provider termination with non-`finish` tool calls** — terminate. The tool calls are dropped (the provider refused to deliver the response, so executing the tools would be a security/correctness issue). Same as the previous case.
+   - **Non-`finish` tool calls on a recoverable turn** — execute the tool calls (this includes the built-in `continue_loop`), append the results, and return to step 2.
+   - **No `finish`, no other tool calls, natural end-of-turn** — the model "thinks it's done" but didn't call `finish`. Inject a confirmation user message ("Your turn ended without calling the `finish` tool. If you are done, call `finish(content=...)` with your final answer. If you want to keep working, call more tools or `continue_loop(content=...)`.") and re-prompt the model. The next turn either calls `finish` (terminate) or calls more tools (continue).
+
+   The "natural end-of-turn" branch is the **first** step of the two-step policy: detect the tentative termination attempt. The injected confirmation is the **second** step: give the model an explicit chance to commit. This pattern handles models that "think they're done" and emit a natural end-of-turn signal without explicitly calling `finish` — a real-world reliability issue noted by the pi-mono team.
 
 6. **If the loop ends**:
-   - The `content` argument of the first `finish` tool call becomes `Response.content`. If the loop ended via an unrecoverable provider termination without a `finish` call, `Response.content` falls back to the response's text (often empty).
+   - The `content` argument of the first `finish` tool call becomes `Response.content`. If the loop ended via an unrecoverable provider termination, `Response.content` falls back to the response's text (often empty).
    - `Response.stop_reason` is one of the literal values listed in [`Response.stop_reason`](#the-response-object) — `"finish"` when the model called `finish`, or a non-clean literal (`max_tokens`, `refusal`, `length`, `content_filter`, `incomplete`, `failed`, `cancelled`) when the provider terminated the turn.
    - The `on_finish` hook fires with `content`, `messages`, and `iterations` (no `tool_call_id`).
    - The `Response` is returned to the caller.
-7. **If the loop continues**, execute each non-`finish` tool call (this includes the built-in `continue_loop`), append the results, and return to step 2.
-8. If `max_iterations` is set and exceeded, raise `MaxIterationsError`. Default is `None` (unlimited).
+7. If `max_iterations` is set and exceeded (after the model has run out of opportunities to call `finish` or other tools), raise `MaxIterationsError`. Default is `None` (unlimited).
 
-> **Model-driven termination.** The loop ends when the model calls `finish` — the only signal the model authors. A provider's natural end-of-turn field without a `finish` call is treated as CONTINUE, not END. This is the explicitness guarantee from [coreouto's philosophy](philosophy.md#explicitness): the system does what you tell it and nothing more.
+> **Two-step termination, modeled on pi-mono.** The loop detects a tentative termination attempt (the provider's natural end-of-turn signal without a `finish` call) and injects a confirmation user message. The model's next turn either calls `finish` (terminate) or calls more tools (continue). Unrecoverable provider terminations still end the loop immediately, even without `finish`, because they cannot be re-prompted away. This is the explicitness guarantee from [coreouto's philosophy](philosophy.md#explicitness): the model declares its intent to end the loop, and the agent doesn't infer termination from a provider signal that the model didn't author.
 
-> **`continue_loop` keeps the loop running; `finish` ends it.** When the model calls `continue_loop` (with or without other tool calls in the same turn), coreouto executes it like any other tool, appends the result, and continues the loop. The loop only ends when the model calls `finish`.
+> **`continue_loop` keeps the loop running; `finish` ends it.** When the model calls `continue_loop` (with or without other tool calls in the same turn), coreouto executes it like any other tool, appends the result, and continues the loop. The loop only ends when the model calls `finish` (or when an unrecoverable provider termination is reached).
 
 ## Hooks during the loop
 

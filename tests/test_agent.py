@@ -2170,3 +2170,152 @@ async def test_continue_loop_then_finish_terminates_with_finish_content():
     tool_msgs = [m for m in response.messages if m.role == "tool" and m.name == "continue_loop"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].content == "still working..."
+
+
+# ---------------------------------------------------------------------------
+# Two-step termination: detect attempt → confirm → finish
+# ---------------------------------------------------------------------------
+# Under the two-step policy, the loop detects a termination attempt
+# (provider's natural end-of-turn signal without `finish`), then
+# re-prompts the model with a confirmation user message. The model's
+# next turn either calls `finish` (terminate) or calls more tools
+# (continue). This is the explicit confirmation step the user
+# requested — it guards against models that "think they're done" and
+# emit a natural end-of-turn signal without explicitly calling
+# `finish`.
+
+
+async def test_natural_end_without_finish_injects_confirmation_and_continues():
+    # A response that emits Anthropic's natural end_turn without a
+    # `finish` call is a tentative termination attempt. The loop
+    # injects a confirmation user message and re-prompts the model.
+    # The model's next turn (this test queues it) calls `finish`,
+    # which terminates the loop.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="I think I'm done.",
+            stop_reason="end_turn",
+            terminate=False,  # no finish — tentative termination
+        )
+    )
+    provider.queue(_terminate_response("the final answer"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
+    response = await agent.call("hello")
+
+    # The loop ran the tentative turn (iteration 1) plus the
+    # confirmation turn (iteration 2), and the confirmation turn
+    # called `finish`.
+    assert response.iterations == 2
+    assert response.content == "the final answer"
+    # The confirmation user message is in the conversation history
+    # (between the tentative assistant turn and the final
+    # `finish`-calling turn).
+    user_messages = [m for m in response.messages if m.role == "user"]
+    confirmation_msgs = [m for m in user_messages if "finish" in (m.content or "")]
+    assert len(confirmation_msgs) == 1
+
+
+async def test_confirmation_lets_model_keep_working_instead_of_finishing():
+    # The model "thinks it's done" but on the confirmation turn
+    # decides to keep working — it calls another tool instead of
+    # `finish`. The loop continues to run that tool.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    # Tentative turn: natural end_turn, no finish.
+    provider.queue(
+        MockLLMResponse(
+            content="wait, I want to do more.",
+            stop_reason="end_turn",
+            terminate=False,
+        )
+    )
+    # Confirmation turn: model calls echo instead of finish.
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="tool_use",
+            terminate=False,
+        )
+    )
+    # After the echo, the model calls finish.
+    provider.queue(_terminate_response("done"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 3
+    assert response.content == "done"
+
+
+async def test_unrecoverable_termination_terminates_immediately_without_finish():
+    # An unrecoverable provider termination (SAFETY, refusal, content_filter,
+    # etc.) ends the loop immediately even without a `finish` call —
+    # the provider refused to deliver, the run was cancelled, etc. The
+    # user shouldn't have to wait for a confirmation turn that will
+    # never produce a useful answer.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="[filtered]",
+            stop_reason="content_filter",
+            terminate=False,  # no finish; not auto-injected because terminate=False
+        )
+    )
+    register_provider("openai", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.stop_reason == "content_filter"
+
+
+async def test_natural_end_with_finish_skips_confirmation_terminates_immediately():
+    # If the model already called `finish` in the same turn as the
+    # provider's natural end-of-turn signal, the loop terminates
+    # immediately — no confirmation needed. (The two-step policy is
+    # only invoked on the *tentative* path where `finish` is missing.)
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "f1", "name": "finish", "arguments": {"content": "all done"}}],
+            stop_reason="end_turn",
+            terminate=False,
+        )
+    )
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.content == "all done"
+
+
+async def test_confirmation_step_keeps_looping_until_max_iterations_if_model_never_finishes():
+    # If the model never calls `finish` and never calls other tools,
+    # the loop keeps injecting confirmations until `max_iterations`
+    # is hit. This is the safety net for the two-step policy: a model
+    # that never declares its intent to end will eventually raise
+    # `MaxIterationsError`.
+    provider = MockProvider()
+    for _ in range(5):
+        provider.queue(
+            MockLLMResponse(
+                content="still thinking...",
+                stop_reason="end_turn",
+                terminate=False,
+            )
+        )
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", max_iterations=3))
+    with pytest.raises(MaxIterationsError):
+        await agent.call("hello")
