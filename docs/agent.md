@@ -2,7 +2,7 @@
 
 The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the provider's end-of-turn signal classifies as END — the text of that turn becomes the final answer. The rule is "if the value is not END, keep going", and the END set is defined per-provider from each provider's documented vocabulary. To output text without ending the loop (e.g. share progress before calling more tools), the model calls the built-in `continue_loop` tool.
 
-The end-of-turn field is provider-specific: Anthropic uses `stop_reason`, OpenAI Chat Completions uses `finish_reason`, OpenAI Responses uses `status` (normalized by coreouto to `completed` / `incomplete:<reason>`), and Google Gemini uses `finishReason`. See [How the loop works](#how-the-loop-works) for the exact END values per provider.
+The end-of-turn field is provider-specific: Anthropic uses `stop_reason`, OpenAI Chat Completions uses `finish_reason`, OpenAI Responses uses `status` (normalized by coreouto to `completed` / `incomplete:<reason>`), and Google Gemini uses `finishReason`. See [How the loop works](#how-the-loop-works) for the exact END / CONTINUE values per provider — including the "looks like END but is actually CONTINUE" cases like Anthropic's `pause_turn` and the recoverable `incomplete:max_output_tokens` on OpenAI Responses.
 
 ## Creating an agent
 
@@ -207,17 +207,20 @@ config = co.AgentConfig(
 4. Fire the `on_iteration` hook.
 5. **Classify the provider's end-of-turn signal** to decide whether the loop ends. The rule is: **if the value is not END, keep going.** The END set is defined per-provider from each provider's documented end-of-turn vocabulary:
 
-   | Provider | Native field | END values (loop terminates) |
-   |---|---|---|
-   | Anthropic | `stop_reason` | `"end_turn"`, `"max_tokens"`, `"stop_sequence"`, `"pause_turn"`, `"refusal"` |
-   | OpenAI Chat Completions | `finish_reason` | `"stop"`, `"length"`, `"content_filter"`, `"function_call"` (legacy) |
-   | OpenAI Responses | `status` (normalized to `completed` or `incomplete:<reason>`) | `"failed"`, `"cancelled"`, `"incomplete"` (and `incomplete:<reason>` variants) |
-   | Google Gemini | `finish_reason` (enum) | any explicit terminal value: `MAX_TOKENS`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `MALFORMED_FUNCTION_CALL`, `UNEXPECTED_TOOL_CALL`, `FINISH_REASON_UNSPECIFIED`, `IMAGE_*`, `NO_IMAGE` |
-   | any other provider | `stop_reason` (treated as opaque) | unknown — falls back to the historical "no tool calls = end" rule |
+   | Provider | Native field | END values (loop terminates) | CONTINUE values |
+   |---|---|---|---|
+   | Anthropic | `stop_reason` | `"end_turn"`, `"max_tokens"`, `"stop_sequence"`, `"refusal"` | `"tool_use"`, `"pause_turn"` |
+   | OpenAI Chat Completions | `finish_reason` | `"stop"`, `"length"`, `"content_filter"` | `"tool_calls"`, legacy `"function_call"` (only when tool calls were actually produced) |
+   | OpenAI Responses | `status` (normalized to `completed` or `incomplete:<reason>`) | `"failed"`, `"cancelled"`, `"incomplete:content_filter"` — unconditional. `"incomplete"` / `"incomplete:max_output_tokens"` are END only when no tool calls were produced. | `incomplete:*` (with tool calls), `completed` (with tool calls) |
+   | Google Gemini | `finish_reason` (enum) | `MAX_TOKENS`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE` — unconditional | `STOP`, `FINISH_REASON_UNSPECIFIED`, `UNEXPECTED_TOOL_CALL`, `MALFORMED_FUNCTION_CALL` — END only when no tool calls were produced |
+   | any other provider | `stop_reason` (treated as opaque) | unknown — falls back to the historical "no tool calls = end" rule | |
 
-   For Google Gemini and OpenAI Responses the field is always END-like (e.g. `STOP` and `completed` are the natural end-of-turn values), so the loop must additionally check whether the response contained tool calls: `STOP` / `completed` is END only when there are no tool calls in the response; any non-STOP finish reason is END regardless of tool calls.
+   **A few values that look like END but are actually CONTINUE** — these were the source of premature terminations in earlier coreouto versions:
 
-   For Anthropic and OpenAI Chat Completions, the field itself encodes "I just called a tool" (`tool_use` and `tool_calls` respectively). Any other value on those providers — including `None` and any future API addition — is treated as CONTINUE, so the loop never silently ends on an unrecognized signal.
+   - **Anthropic `pause_turn`** — emitted when the server-side sampling loop hits its iteration limit (default 10) while running server tools like web search / web fetch. The official guidance is to send the assistant response back as-is in a new request so the loop can continue. coreouto treats it the same as `tool_use`.
+   - **OpenAI Chat legacy `function_call`** — the singular predecessor of the modern `tool_calls` field. It's a "I called a function" signal, not a finish signal. coreouto continues the loop so the function call can be executed (provided the provider adapter surfaces it as a `ToolCall`).
+   - **OpenAI Responses `incomplete` / `incomplete:max_output_tokens`** — recoverable when the response contains a `function_call` output item. The model emitted the call before the run was cut off, so coreouto still executes it. The truly unrecoverable `incomplete:content_filter` is still an unconditional END.
+   - **Google `FINISH_REASON_UNSPECIFIED` / `UNEXPECTED_TOOL_CALL` / `MALFORMED_FUNCTION_CALL`** — placeholder / parse-failure values. If the SDK couldn't classify the finish reason but a valid `function_call` part is present, coreouto runs it. Unrecoverable signals like `SAFETY` and `MAX_TOKENS` are still unconditional END.
 
 6. **If the loop ends**:
    - The response's `content` becomes `Response.content`.

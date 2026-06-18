@@ -1536,7 +1536,10 @@ async def test_google_safety_finish_reason_terminates_even_with_tool_calls():
     assert response.stop_reason == "finish"
 
 
-async def test_google_max_tokens_finish_reason_terminates():
+async def test_google_max_tokens_finish_reason_terminates_with_max_tokens_literal():
+    # Gemini's MAX_TOKENS finish_reason is surfaced on Response.stop_reason
+    # as the "max_tokens" literal (mirroring Anthropic) so callers can
+    # distinguish a length cap from a clean finish.
     provider = MockProvider()
     provider.queue(MockLLMResponse(content="partial", stop_reason="MAX_TOKENS"))
     register_provider("google", provider)
@@ -1544,7 +1547,7 @@ async def test_google_max_tokens_finish_reason_terminates():
     agent = Agent(AgentConfig(name="test", model="m", provider="google"))
     response = await agent.call("hello")
 
-    assert response.stop_reason == "finish"  # no distinct literal for Gemini length
+    assert response.stop_reason == "max_tokens"
 
 
 async def test_unknown_provider_falls_back_to_no_tool_calls_rule():
@@ -1573,20 +1576,24 @@ async def test_unknown_provider_falls_back_to_no_tool_calls_rule():
 # edge cases where the response has unusual but valid stop_reason values.
 
 
-async def test_anthropic_pause_turn_terminates_loop():
-    # `pause_turn` means the model paused a long-running turn. coreouto
-    # treats it as END: the caller can resume by sending the response back
-    # as the next input. Continuing automatically is unsafe (a long pause
-    # often means the model is waiting for something external).
+async def test_anthropic_pause_turn_continues_loop():
+    # `pause_turn` is a continuation signal: the server-side sampling loop
+    # hit its iteration limit (default 10) while running server tools like
+    # web search / web fetch. The official guidance is to send the
+    # assistant response back as-is in a new request so the loop can
+    # continue — see the Anthropic SDK docstring and SDK issue #1170.
+    # coreouto treats it the same as `tool_use`: the loop should re-send
+    # the response on the next iteration.
     provider = MockProvider()
-    provider.queue(MockLLMResponse(content="paused", stop_reason="pause_turn"))
+    provider.queue(MockLLMResponse(content="mid-turn", stop_reason="pause_turn"))
+    provider.queue(MockLLMResponse(content="done", stop_reason="end_turn"))
     register_provider("anthropic", provider)
 
     agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
     response = await agent.call("hello")
 
-    assert response.iterations == 1
-    assert response.stop_reason == "finish"
+    assert response.iterations == 2
+    assert response.content == "done"
 
 
 async def test_anthropic_unknown_stop_reason_continues_loop():
@@ -1637,9 +1644,40 @@ async def test_anthropic_none_stop_reason_with_tool_calls_continues():
     assert response.content == "done"
 
 
-async def test_openai_chat_function_call_legacy_terminates():
-    # The deprecated `function_call` finish_reason is a terminator, not a
-    # tool-call signal. (Modern models use `tool_calls`.)
+async def test_openai_chat_function_call_legacy_continues_loop():
+    # The deprecated `function_call` finish_reason is the singular
+    # predecessor of the modern `tool_calls` field — it is a "I called a
+    # function" signal, not a finish signal. coreouto treats it the same
+    # as `tool_calls`: the loop continues so the function call can be
+    # executed. Note that the legacy function_call is a singular
+    # field on the message, not a list; a real OpenAI Chat provider
+    # adapter would parse it in `format_assistant_message`. Here we
+    # verify the loop policy: the finish_reason alone must not end the
+    # loop when a tool call is present.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="function_call",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="stop"))
+    register_provider("openai", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+
+
+async def test_openai_chat_function_call_without_tool_calls_terminates():
+    # `function_call` finish_reason with no actual tool call content is a
+    # degenerate legacy response — nothing to execute, so the loop ends.
     provider = MockProvider()
     provider.queue(MockLLMResponse(content="done", stop_reason="function_call"))
     register_provider("openai", provider)
@@ -1708,17 +1746,187 @@ async def test_google_stop_without_tool_calls_terminates_with_text():
     assert response.stop_reason == "finish"
 
 
-async def test_google_unspecified_terminates_even_with_tool_calls():
+async def test_google_unspecified_with_tool_calls_continues_loop():
+    # `FINISH_REASON_UNSPECIFIED` is a placeholder value (the SDK
+    # couldn't classify the finish reason). When a valid function_call
+    # part is present the model did call a tool — coreouto should still
+    # execute it rather than dropping it on the floor.
     @register_tool("echo")
     def echo(msg: str) -> str:
         return f"echo: {msg}"
 
-    # `FINISH_REASON_UNSPECIFIED` is a terminator regardless of tool_calls.
     provider = MockProvider()
     provider.queue(
         MockLLMResponse(
             tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
             stop_reason="FINISH_REASON_UNSPECIFIED",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="STOP"))
+    register_provider("google", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="google", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+
+
+async def test_google_unspecified_without_tool_calls_terminates():
+    provider = MockProvider()
+    provider.queue(MockLLMResponse(content="partial", stop_reason="FINISH_REASON_UNSPECIFIED"))
+    register_provider("google", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="google"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.stop_reason == "finish"
+
+
+# ---------------------------------------------------------------------------
+# Mid-loop truncation / recoverable-incomplete scenarios
+# ---------------------------------------------------------------------------
+# These exercise the "recoverable" branch of the END rule: the provider's
+# stop field carries a value that USED to unconditionally end the loop, but
+# coreouto now checks has_tool_calls first and executes the calls. The
+# original bug (v0.6.0-v0.6.2) dropped tool calls on the floor when a
+# response was truncated mid-tool-emission.
+
+
+async def test_openai_responses_incomplete_with_tool_calls_executes_them():
+    # OpenAI Responses can return status="incomplete:max_output_tokens"
+    # after the model emitted a function_call item but the run was cut
+    # off by the output token cap. The tool call should still be
+    # executed instead of being silently dropped.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="incomplete:max_output_tokens",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="completed"))
+    register_provider("openai-response", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai-response", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+
+
+async def test_openai_responses_bare_incomplete_with_tool_calls_continues():
+    # `status="incomplete"` (no reason) with a tool call present must
+    # also continue. Some SDK versions emit this for partial streaming
+    # responses.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="incomplete",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="completed"))
+    register_provider("openai-response", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai-response", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+
+
+async def test_openai_responses_incomplete_content_filter_still_terminates():
+    # `incomplete:content_filter` is an unrecoverable safety block —
+    # even with tool calls present the loop ends so the caller can
+    # surface the issue rather than executing a tool that the provider
+    # flagged as potentially unsafe.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="incomplete:content_filter",
+        )
+    )
+    register_provider("openai-response", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai-response", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 1
+    assert response.stop_reason == "incomplete"
+
+
+async def test_google_unexpected_tool_call_with_tool_calls_continues():
+    # `UNEXPECTED_TOOL_CALL` is normally a parse-failure signal, but if
+    # the SDK still surfaced the function call to us we should run it.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="UNEXPECTED_TOOL_CALL",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="STOP"))
+    register_provider("google", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="google", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+
+
+async def test_google_malformed_function_call_with_tool_calls_continues():
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="MALFORMED_FUNCTION_CALL",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="STOP"))
+    register_provider("google", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="google", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+
+
+async def test_google_safety_still_terminates_even_with_tool_calls():
+    # `SAFETY` is a real unrecoverable block — even with tool calls the
+    # loop should end so the caller can surface the safety issue rather
+    # than executing a tool the provider refused to deliver.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="SAFETY",
         )
     )
     register_provider("google", provider)
@@ -1728,3 +1936,28 @@ async def test_google_unspecified_terminates_even_with_tool_calls():
 
     assert response.iterations == 1
     assert response.stop_reason == "finish"
+
+
+async def test_anthropic_pause_turn_with_tool_calls_continues():
+    # Real-world pause_turn responses can also contain tool_use blocks
+    # (the server-side sampling loop paused mid-tool-emission). The loop
+    # must continue and execute those tool calls.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="pause_turn",
+        )
+    )
+    provider.queue(MockLLMResponse(content="done", stop_reason="end_turn"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"

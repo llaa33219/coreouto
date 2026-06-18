@@ -5,7 +5,7 @@ This file guides AI coding agents working on the coreouto codebase.
 ## What coreouto is
 
 A minimal Python agent library for PyPI. The entire core is one loop:
-**call → internal loop → `Response` when the provider's end-of-turn signal classifies as END** (the text of that turn becomes the final answer). The exact field and END values depend on the provider — see `_should_terminate` in `src/coreouto/agent.py`. The rule is "if the value is not END, keep going". To output text without ending the loop, the model calls the `continue_loop` tool.
+**call → internal loop → `Response` when the provider's end-of-turn signal classifies as END** (the text of that turn becomes the final answer). The exact field and END values depend on the provider — see `_should_terminate` in `src/coreouto/agent.py`. The rule is "if the value is not END, keep going", with a few recoverable-incomplete cases (Anthropic `pause_turn`, OpenAI Responses `incomplete:max_output_tokens` with tool calls, Google `FINISH_REASON_UNSPECIFIED` with tool calls) treated as CONTINUE. To output text without ending the loop, the model calls the `continue_loop` tool.
 
 ## The five philosophies (NON-NEGOTIABLE)
 
