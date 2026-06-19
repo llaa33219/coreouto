@@ -222,6 +222,17 @@ coreouto uses a **two-step termination policy** modeled on the `terminate` flag 
 
    The "natural end-of-turn" branch is the **first** step of the two-step policy: detect the tentative termination attempt. The injected confirmation is the **second** step: give the model an explicit chance to commit. This pattern handles models that "think they're done" and emit a natural end-of-turn signal without explicitly calling `finish` — a real-world reliability issue noted by the pi-mono team.
 
+   Per-provider classification of stop signals:
+
+   | Provider | Natural end-of-turn (tentative) | CONTINUE (model mid-task / keep going) | Unrecoverable (terminate) |
+   |---|---|---|---|
+   | Anthropic | `end_turn`, `stop_sequence` | `tool_use` (model called tools), `pause_turn` (server-side iteration cap; re-send to continue) | `max_tokens`, `refusal` |
+   | OpenAI Chat | `stop` | `tool_calls`, `function_call` (deprecated) | `length`, `content_filter` |
+   | OpenAI Responses | `completed`, `incomplete`, `incomplete:max_output_tokens` | (none — `function_call` output items are in `response.output`) | `failed`, `cancelled`, `incomplete:content_filter` |
+   | Google Gemini | `STOP`, `FINISH_REASON_UNSPECIFIED`, `UNEXPECTED_TOOL_CALL`, `MALFORMED_FUNCTION_CALL` | (none — `function_call` parts are in `candidate.content.parts`) | `MAX_TOKENS`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE` |
+
+   `tool_use`, `tool_calls`, `function_call`, and `pause_turn` are NOT natural end-of-turn signals — they mean the model is mid-task or the server says keep going, and coreouto treats them as CONTINUE (no confirmation, no termination).
+
 6. **If the loop ends**:
    - The `content` argument of the first `finish` tool call becomes `Response.content`. If the loop ended via an unrecoverable provider termination, `Response.content` falls back to the response's text (often empty).
    - `Response.stop_reason` is one of the literal values listed in [`Response.stop_reason`](#the-response-object) — `"finish"` when the model called `finish`, or a non-clean literal (`max_tokens`, `refusal`, `length`, `content_filter`, `incomplete`, `failed`, `cancelled`) when the provider terminated the turn.

@@ -2319,3 +2319,132 @@ async def test_confirmation_step_keeps_looping_until_max_iterations_if_model_nev
     agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", max_iterations=3))
     with pytest.raises(MaxIterationsError):
         await agent.call("hello")
+
+
+# ---------------------------------------------------------------------------
+# CONTINUE values are NOT tentative terminations
+# ---------------------------------------------------------------------------
+# `tool_use`, `tool_calls`, `function_call`, and `pause_turn` are
+# CONTINUE values — the model is mid-task or the server says keep
+# going. They must NOT trigger the two-step confirmation flow; the
+# loop should just continue (executing any tool calls and re-prompting
+# the model on the next iteration). See the Anthropic and OpenAI SDK
+# docstrings: tool_use/tool_calls mean "the model called a tool",
+# pause_turn means "re-send the response to let the model continue".
+
+
+async def test_anthropic_pause_turn_without_finish_continues_without_confirmation():
+    # `pause_turn` is a CONTINUE signal — the server-side sampling
+    # loop hit its iteration limit. The official guidance is to
+    # send the response back so the loop can continue. coreouto
+    # should NOT inject a confirmation message (that would be
+    # incorrect — the model didn't "think it's done", the server
+    # paused the loop). It should just re-prompt with the existing
+    # messages and let the model continue naturally.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="mid-thought...",
+            stop_reason="pause_turn",
+            terminate=False,
+        )
+    )
+    provider.queue(_terminate_response("done"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic"))
+    response = await agent.call("hello")
+
+    # Two iterations: pause_turn (no confirmation, just re-prompt)
+    # → finish.
+    assert response.iterations == 2
+    assert response.content == "done"
+    # Crucially, no confirmation user message was injected.
+    user_messages = [m for m in response.messages if m.role == "user"]
+    confirmation_msgs = [m for m in user_messages if "finish" in (m.content or "")]
+    assert len(confirmation_msgs) == 0
+
+
+async def test_openai_chat_tool_calls_continue_reason_continues_without_confirmation():
+    # `tool_calls` finish_reason with no actual tool calls (degenerate
+    # but possible) should continue without injecting a confirmation.
+    # In practice this is rare; the loop should just re-prompt.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="...",
+            stop_reason="tool_calls",
+            terminate=False,
+        )
+    )
+    provider.queue(_terminate_response("done"))
+    register_provider("openai", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+    user_messages = [m for m in response.messages if m.role == "user"]
+    confirmation_msgs = [m for m in user_messages if "finish" in (m.content or "")]
+    assert len(confirmation_msgs) == 0
+
+
+async def test_openai_chat_legacy_function_call_continues_without_confirmation():
+    # The legacy `function_call` finish_reason is the deprecated
+    # predecessor of `tool_calls` — same meaning, same CONTINUE
+    # classification.
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            content="...",
+            stop_reason="function_call",
+            terminate=False,
+        )
+    )
+    provider.queue(_terminate_response("done"))
+    register_provider("openai", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="openai"))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+    user_messages = [m for m in response.messages if m.role == "user"]
+    confirmation_msgs = [m for m in user_messages if "finish" in (m.content or "")]
+    assert len(confirmation_msgs) == 0
+
+
+async def test_anthropic_tool_use_stop_reason_with_tool_calls_executes_them():
+    # The classic case: `tool_use` stop_reason with actual tool
+    # calls. The loop must execute the tools, NOT inject a
+    # confirmation. The continuation is mechanical — the model
+    # called a tool, the loop runs it, the model gets the result.
+    @register_tool("echo")
+    def echo(msg: str) -> str:
+        return f"echo: {msg}"
+
+    provider = MockProvider()
+    provider.queue(
+        MockLLMResponse(
+            tool_calls=[{"id": "tc1", "name": "echo", "arguments": {"msg": "hi"}}],
+            stop_reason="tool_use",
+            terminate=False,
+        )
+    )
+    provider.queue(_terminate_response("done"))
+    register_provider("anthropic", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="anthropic", tools=["echo"]))
+    response = await agent.call("hello")
+
+    assert response.iterations == 2
+    assert response.content == "done"
+    # The tool was actually executed (not dropped).
+    tool_msgs = [m for m in response.messages if m.role == "tool" and m.name == "echo"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].content == "echo: hi"
+    # No confirmation was injected.
+    user_messages = [m for m in response.messages if m.role == "user"]
+    confirmation_msgs = [m for m in user_messages if "finish" in (m.content or "")]
+    assert len(confirmation_msgs) == 0

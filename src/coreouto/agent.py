@@ -71,18 +71,30 @@ _ANTHROPIC_TERMINATE_REASONS = frozenset({"max_tokens", "refusal"})
 # call `finish`. The loop treats them as termination attempts and
 # injects a confirmation user message; the model's next turn
 # either calls `finish` (terminate) or calls more tools (continue).
-# `pause_turn` is here too: it's a server-side "loop hit its iteration
-# limit while running server tools" — the official guidance is to
-# send the response back so the loop can continue (see Anthropic SDK
-# issue #1170).
-_ANTHROPIC_NATURAL_END_REASONS = frozenset({"end_turn", "stop_sequence", "tool_use", "pause_turn"})
+_ANTHROPIC_NATURAL_END_REASONS = frozenset({"end_turn", "stop_sequence"})
+# Continuation values from Anthropic. These are NOT termination
+# attempts — the model is mid-task, the loop should keep going.
+# `tool_use` means the model called tools (loop must execute them).
+# `pause_turn` means the server-side sampling loop hit its iteration
+# limit (default 10) while running server tools like web search /
+# web fetch; the official guidance is to send the assistant
+# response back as-is in a new request so the loop can continue
+# (see Anthropic SDK issue #1170 and the SDK docstring on
+# `Message.stop_reason`).
+_ANTHROPIC_CONTINUE_REASONS = frozenset({"tool_use", "pause_turn"})
 
 _OPENAI_CHAT_TERMINATE_REASONS = frozenset({"length", "content_filter"})
-# Natural end-of-turn values from OpenAI Chat. `stop` is the natural
-# completion; `tool_calls` and the legacy `function_call` mean the
-# model emitted a tool call. The loop treats all of these as
-# tentative termination attempts.
-_OPENAI_CHAT_NATURAL_END_REASONS = frozenset({"stop", "tool_calls", "function_call"})
+# Natural end-of-turn value from OpenAI Chat. `stop` means the
+# model hit a natural stop point or a provided stop sequence.
+# The loop treats it as a tentative termination attempt and
+# injects a confirmation user message.
+_OPENAI_CHAT_NATURAL_END_REASONS = frozenset({"stop"})
+# Continuation values from OpenAI Chat. These mean the model
+# called a tool/function and the loop must execute the call(s)
+# before re-prompting. `tool_calls` is the modern field;
+# `function_call` is the deprecated predecessor with the same
+# meaning (per the SDK docstring: "the model called a function").
+_OPENAI_CHAT_CONTINUE_REASONS = frozenset({"tool_calls", "function_call"})
 
 # OpenAI Responses API: these are the unrecoverable terminal
 # statuses — server rejected, user cancelled, content filter
@@ -240,6 +252,9 @@ def _should_terminate(provider: str, stop_reason: str | None, tool_calls: list[T
         return stop_reason in (_GOOGLE_TERMINATE_REASONS | _GOOGLE_NATURAL_END_REASONS)
 
     # Unknown provider: only the `finish` tool call ends the loop.
+    # Continuation values (tool_use, pause_turn, tool_calls, etc.)
+    # are also non-terminating — only END/NATURAL_END trigger this
+    # function to return True.
     return False
 
 
@@ -646,19 +661,31 @@ class Agent:
                     messages.append(tool_msg)
                 continue
 
-            # No `finish` call, no non-`finish` tool calls, and the
-            # provider's stop signal is a natural end-of-turn value.
-            # This is a tentative termination attempt: the model
-            # "thinks it's done" but didn't call `finish`. Inject a
-            # confirmation user message and re-prompt the model.
-            # The next turn either calls `finish` (terminate) or
-            # calls more tools (continue). This handles models that
-            # forget to call `finish` (a real-world reliability issue
-            # noted by the pi-mono team when they introduced their
-            # `terminate` tool-result flag).
-            self.inject_user_message(
-                "Your turn ended without calling the `finish` tool. "
-                "If you are done, call `finish(content=...)` with your "
-                "final answer. If you want to keep working, call more "
-                "tools or `continue_loop(content=...)`."
-            )
+            # No `finish` call, no non-`finish` tool calls. The
+            # termination path depends on the provider's stop
+            # signal:
+            #
+            # - If `_should_terminate` returns True (the provider
+            #   emitted an END or NATURAL_END signal), this is a
+            #   tentative termination attempt. Inject a
+            #   confirmation user message and re-prompt the model.
+            #   The next turn either calls `finish` (terminate) or
+            #   calls more tools (continue). This handles models
+            #   that forget to call `finish` (a real-world
+            #   reliability issue noted by the pi-mono team when
+            #   they introduced their `terminate` tool-result
+            #   flag).
+            #
+            # - Otherwise the stop signal is a CONTINUE value
+            #   (`tool_use`, `pause_turn`, `tool_calls`,
+            #   `function_call`, or any other non-terminating
+            #   value). The model is mid-task or the server says
+            #   keep going — re-prompt without injecting a
+            #   confirmation.
+            if _should_terminate(cfg.provider, response.stop_reason, tool_calls):
+                self.inject_user_message(
+                    "Your turn ended without calling the `finish` tool. "
+                    "If you are done, call `finish(content=...)` with your "
+                    "final answer. If you want to keep working, call more "
+                    "tools or `continue_loop(content=...)`."
+                )
