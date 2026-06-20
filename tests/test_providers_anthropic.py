@@ -39,7 +39,7 @@ class FakeUsage:
 
 @dataclass
 class FakeMessage:
-    content: list[FakeContentBlock]
+    content: list[FakeContentBlock] | None
     usage: FakeUsage
 
 
@@ -627,3 +627,38 @@ async def test_create_with_multimodal_tool_result(provider, fake_client):
             ],
         },
     ]
+
+
+@pytest.mark.asyncio
+async def test_create_handles_none_content(provider, fake_client):
+    """Anthropic can return `content=None` for extended-thinking-only responses."""
+    fake_client.messages.queue(
+        FakeMessage(
+            content=None,
+            usage=FakeUsage(input_tokens=5, output_tokens=0),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="Hello")],
+        model="claude-3-haiku-20240307",
+    )
+    assert result.content is None
+    assert result.tool_calls == []
+    assert result.usage.total_tokens == 5
+
+
+@pytest.mark.asyncio
+async def test_create_handles_empty_content(provider, fake_client):
+    """Anthropic can return an empty content list (no text, no tool_use)."""
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[],
+            usage=FakeUsage(input_tokens=5, output_tokens=0),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="Hello")],
+        model="claude-3-haiku-20240307",
+    )
+    assert result.content is None
+    assert result.tool_calls == []

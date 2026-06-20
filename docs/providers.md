@@ -61,6 +61,8 @@ co.register_agent_preset(
 
 > **Note**: On Claude Opus 4.7+ and Claude Fable 5 / Mythos 5, sampling parameters (`temperature`, `top_p`, `top_k`) are rejected by the API. coreouto forwards whatever you set in `provider_config` as-is — pass `None` (or omit them) for those models.
 
+With extended thinking enabled, a turn can return only `thinking` blocks (no text, no tool_use). coreouto handles this — the response's `content` will be `None` and `tool_calls` empty, and the loop will inject a confirmation user message and re-prompt as usual.
+
 Install: `pip install coreouto[anthropic]`
 
 ### Google Generative AI

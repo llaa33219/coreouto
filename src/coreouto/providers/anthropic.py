@@ -145,7 +145,10 @@ class AnthropicProvider:
 
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
-        for block in resp.content:
+        # Anthropic can return `resp.content is None` when the response contains
+        # only `thinking` blocks (extended thinking) or when an empty response
+        # is returned. Iterate defensively.
+        for block in resp.content or []:
             if block.type == "text":
                 text_parts.append(block.text or "")
             elif block.type == "tool_use":
