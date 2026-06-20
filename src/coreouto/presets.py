@@ -24,7 +24,7 @@ class AgentPreset(BaseModel):
     provider: str
     system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list)
-    max_iterations: int = 50
+    max_iterations: int | None = None
     description: str | None = None
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
 
@@ -54,7 +54,7 @@ def register_agent_preset(
     system_prompt: str | None = None,
     tools: list[str] | tuple[str, ...] = (),
     description: str | None = None,
-    max_iterations: int = 50,
+    max_iterations: int | None = None,
     provider_passthrough: dict[str, Any] | None = None,
 ) -> AgentPreset:
     preset = AgentPreset(

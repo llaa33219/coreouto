@@ -143,9 +143,26 @@ def test_tools_default_is_empty_list():
     assert preset.tools == []
 
 
-def test_max_iterations_default_is_50():
+def test_max_iterations_default_is_unlimited():
     preset = register_agent_preset("researcher", model="gpt-4", provider="openai")
-    assert preset.max_iterations == 50
+    assert preset.max_iterations is None
+    assert preset.to_config().max_iterations is None
+
+
+def test_max_iterations_explicit_none_is_unlimited():
+    preset = register_agent_preset(
+        "researcher", model="gpt-4", provider="openai", max_iterations=None
+    )
+    assert preset.max_iterations is None
+    assert preset.to_config().max_iterations is None
+
+
+def test_max_iterations_explicit_int_is_preserved():
+    preset = register_agent_preset(
+        "researcher", model="gpt-4", provider="openai", max_iterations=20
+    )
+    assert preset.max_iterations == 20
+    assert preset.to_config().max_iterations == 20
 
 
 def test_system_prompt_default_is_none():
