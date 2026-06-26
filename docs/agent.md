@@ -1,13 +1,10 @@
 # Agent
 
-The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model explicitly calls the built-in `finish` tool. The `content` argument of the `finish` call is the canonical final answer. This is coreouto's **model-driven termination policy**: the model's intent to end the loop is declared through a tool call, not inferred from a provider signal.
+The `Agent` class is the core of coreouto. It takes an `AgentConfig`, runs an internal loop calling the LLM and executing tools, and returns a `Response` when the model produces a response with **text content and no tool calls**. That response's text content becomes the final answer. A response with tool calls means the model is mid-task: the loop executes the tools and continues.
 
-To output text without ending the loop (e.g. share progress before calling more tools), the model calls the built-in `continue_loop` tool. The two reserved tools have opposite effects on the loop:
+Unrecoverable provider terminations (token cap, refusal, content filter, server failure) end the loop immediately, even if the response carries tool calls — those tool calls are dropped as a security/correctness invariant.
 
-- `finish(content=...)` — end the loop; the `content` is the final answer.
-- `continue_loop(content=...)` — show `content` to the user mid-task; the loop continues.
-
-Both names are reserved — you cannot register your own tool under either name. The agent loop injects them automatically into every call.
+There are no reserved tools. The only tools in the loop are the ones you register.
 
 ## Creating an agent
 
@@ -49,7 +46,7 @@ agent = co.Agent(config)
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
 
-If `system_prompt` is `None`, a default system prompt is injected automatically that tells the model to use tools and explains both reserved tools: `finish` (end the loop) and `continue_loop` (share progress without ending). The default prompt explicitly tells the model that a text-only turn without `finish` will be re-prompted, so the model must call `finish` to actually close the loop. For the full text of the default and guidance on writing your own, see [System prompts](prompts.md).
+If `system_prompt` is `None`, a default system prompt is injected automatically that tells the model to use tools and explains the termination rule: call tools to work, respond with text and no tool calls to finish. For the full text of the default and guidance on writing your own, see [System prompts](prompts.md).
 
 ## Calling the agent
 
@@ -176,7 +173,7 @@ If you need a concurrency cap, write a hook on `BEFORE_TOOL_CALL` that records s
 | Field            | Type              | Description                                          |
 |------------------|-------------------|------------------------------------------------------|
 | `content`        | `str`             | The text of the model's final turn (the turn that ended the loop) |
-| `stop_reason`    | `Literal["finish", "max_iterations", "max_tokens", "refusal", "content_filter", "length", "incomplete", "failed", "cancelled"]` | Why the loop terminated. `"finish"` when the model called the `finish` tool, `"max_iterations"` when the iteration cap was hit. Provider-specific non-clean terminations are also surfaced: `"max_tokens"` / `"length"` (token cap), `"refusal"` (Anthropic refusal), `"content_filter"` (OpenAI content filter), `"incomplete"` (OpenAI Responses incomplete), `"failed"` / `"cancelled"` (OpenAI Responses terminal states). |
+| `stop_reason`    | `Literal["finish", "max_iterations", "max_tokens", "refusal", "content_filter", "length", "incomplete", "failed", "cancelled"]` | Why the loop terminated. `"finish"` = clean text-only termination (text content, no tool calls). `"max_iterations"` = iteration cap hit. The remaining literals are unrecoverable provider terminations: `"max_tokens"` / `"length"` (token cap), `"refusal"` (Anthropic refusal), `"content_filter"` (OpenAI content filter), `"incomplete"` (OpenAI Responses incomplete), `"failed"` / `"cancelled"` (OpenAI Responses terminal states). |
 | `messages`       | `list[Message]`   | Full message history (system, user, assistant, tool) |
 | `iterations`     | `int`             | How many LLM calls were made                         |
 | `usage`          | `list[Usage]`     | Token usage per LLM call                             |
@@ -185,7 +182,7 @@ Each `Usage` entry has `prompt_tokens`, `completion_tokens`, and `total_tokens`.
 
 ## `MaxIterationsError`
 
-By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the provider emits its natural end-of-turn signal (see [How the loop works](#how-the-loop-works)). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without the model terminating:
+By default `max_iterations` is `None`, which means the loop has no iteration ceiling — it keeps going until the model produces a response with text content and no tool calls (or an unrecoverable provider termination occurs). Set `max_iterations` to a positive int to cap the loop and raise `MaxIterationsError` after that many iterations without the model terminating:
 
 ```python
 try:
@@ -206,43 +203,46 @@ config = co.AgentConfig(
 
 ## How the loop works
 
-coreouto uses a **two-step termination policy** modeled on the `terminate` flag in [pi-mono](https://github.com/badlogic/pi-mono). The model declares its intent to end the loop through a tool call, not through a provider's natural end-of-turn signal.
+coreouto's termination rule is simple: **a response with text content and no tool calls ends the loop; the assistant text is the final answer.** A response with tool calls continues the loop. A response with no content and no tool calls (e.g. a thinking-only turn) also continues the loop — the model is treated as still working.
 
-1. Build the message list: system prompt (default or configured) + history (if any) + user message. Drain any pending user messages injected via `Agent.inject_user_message`.
-2. Send the messages and resolved tool definitions (the user's tools + `continue_loop` + `finish`) to the LLM via the registered provider.
-3. Append the assistant's response (with any tool calls) to the message list.
-4. Fire the `on_iteration` hook.
-5. **Classify the response into one of four branches**:
+Each iteration follows these steps:
 
-   - **`finish` was called** — terminate. The `content` argument of the first `finish` call becomes the final answer. If the response also carried non-`finish` tool calls on an unrecoverable provider termination, those tool calls are dropped (the provider refused to deliver the response, so coreouto refuses to execute its tool calls).
-   - **Unrecoverable provider termination without `finish` and without other tool calls** — `max_tokens`, `refusal`, `length`, `content_filter`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE`, `failed`, `cancelled`, `incomplete:content_filter`. The provider refused to deliver; the loop ends and surfaces the provider signal on `Response.stop_reason`. `Response.content` falls back to the response's text (often empty).
-   - **Unrecoverable provider termination with non-`finish` tool calls** — terminate. The tool calls are dropped (the provider refused to deliver the response, so executing the tools would be a security/correctness issue). Same as the previous case.
-   - **Non-`finish` tool calls on a recoverable turn** — execute the tool calls (this includes the built-in `continue_loop`), append the results, and return to step 2.
-   - **No `finish`, no other tool calls, natural end-of-turn** — the model "thinks it's done" but didn't call `finish`. Inject a confirmation user message ("Your turn ended without calling the `finish` tool. If you are done, call `finish(content=...)` with your final answer. If you want to keep working, call more tools or `continue_loop(content=...)`.") and re-prompt the model. The next turn either calls `finish` (terminate) or calls more tools (continue).
+1. Drain any pending user messages injected via `Agent.inject_user_message`, firing `on_user_injection` for each.
+2. Increment the iteration counter. If `max_iterations` is set and exceeded, raise `MaxIterationsError`.
+3. Fire `before_llm_call`; call the provider with the messages and the user's resolved tools (no injected tools).
+4. Fire `after_llm_call`; append the assistant message to the conversation; fire `on_iteration`.
+5. **Classify the response into one of four branches:**
 
-   The "natural end-of-turn" branch is the **first** step of the two-step policy: detect the tentative termination attempt. The injected confirmation is the **second** step: give the model an explicit chance to commit. This pattern handles models that "think they're done" and emit a natural end-of-turn signal without explicitly calling `finish` — a real-world reliability issue noted by the pi-mono team.
+   - **Unrecoverable provider termination** — `max_tokens`, `refusal`, `length`, `content_filter`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE`, `failed`, `cancelled`, `incomplete:content_filter`. The provider refused, truncated, or filtered the response. Terminate immediately **without executing any tool calls** the response may carry. `Response.stop_reason` surfaces the provider signal. `Response.content` falls back to the response text (often empty).
+   - **Text content + no tool calls** — the model is done. The assistant text is the final answer. `Response.stop_reason` is `"finish"`.
+   - **No content + no tool calls** — the model produced neither text nor tool calls (e.g. a thinking-only turn, or an otherwise empty response). The loop continues (re-prompts) rather than terminating with an empty answer. Still bounded by `max_iterations`.
+   - **Tool calls present (recoverable turn)** — execute the tool calls, append the results, and return to step 1.
 
-   Per-provider classification of stop signals:
+6. On termination: `Response.content` is the assistant text (or fallback); the `on_finish` hook fires with `{content, messages, iterations}`; the `Response` is returned to the caller.
 
-   | Provider | Natural end-of-turn (tentative) | CONTINUE (model mid-task / keep going) | Unrecoverable (terminate) |
-   |---|---|---|---|
-   | Anthropic | `end_turn`, `stop_sequence` | `tool_use` (model called tools), `pause_turn` (server-side iteration cap; re-send to continue) | `max_tokens`, `refusal` |
-   | OpenAI Chat | `stop` | `tool_calls`, `function_call` (deprecated) | `length`, `content_filter` |
-   | OpenAI Responses | `completed`, `incomplete`, `incomplete:max_output_tokens` | (none — `function_call` output items are in `response.output`) | `failed`, `cancelled`, `incomplete:content_filter` |
-   | Google Gemini | `STOP`, `FINISH_REASON_UNSPECIFIED`, `UNEXPECTED_TOOL_CALL`, `MALFORMED_FUNCTION_CALL` | (none — `function_call` parts are in `candidate.content.parts`) | `MAX_TOKENS`, `SAFETY`, `RECITATION`, `LANGUAGE`, `OTHER`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `IMAGE_*`, `NO_IMAGE` |
+> **A response with text content and no tool calls ends the loop. A response with tool calls — or with no content and no tool calls — continues it.** The assistant text from the final (text-only, no-tool-call) response becomes `Response.content`. This is the only termination rule for the model — there is no special tool to call, no confirmation step, no re-prompting.
 
-   `tool_use`, `tool_calls`, `function_call`, and `pause_turn` are NOT natural end-of-turn signals — they mean the model is mid-task or the server says keep going, and coreouto treats them as CONTINUE (no confirmation, no termination).
+### Progress mid-task
 
-6. **If the loop ends**:
-   - The `content` argument of the first `finish` tool call becomes `Response.content`. If the loop ended via an unrecoverable provider termination, `Response.content` falls back to the response's text (often empty).
-   - `Response.stop_reason` is one of the literal values listed in [`Response.stop_reason`](#the-response-object) — `"finish"` when the model called `finish`, or a non-clean literal (`max_tokens`, `refusal`, `length`, `content_filter`, `incomplete`, `failed`, `cancelled`) when the provider terminated the turn.
-   - The `on_finish` hook fires with `content`, `messages`, and `iterations` (no `tool_call_id`).
-   - The `Response` is returned to the caller.
-7. If `max_iterations` is set and exceeded (after the model has run out of opportunities to call `finish` or other tools), raise `MaxIterationsError`. Default is `None` (unlimited).
+Since there is no special tool for mid-task output, the model shares progress by including text alongside a tool call in the same turn. Most providers support assistant text and tool calls in a single message. That text lives in the assistant message in the conversation. (A response with only a tool call and no text continues the loop; a response with text and no tool calls ends it.)
 
-> **Two-step termination, modeled on pi-mono.** The loop detects a tentative termination attempt (the provider's natural end-of-turn signal without a `finish` call) and injects a confirmation user message. The model's next turn either calls `finish` (terminate) or calls more tools (continue). Unrecoverable provider terminations still end the loop immediately, even without `finish`, because they cannot be re-prompted away. This is the explicitness guarantee from [coreouto's philosophy](philosophy.md#explicitness): the model declares its intent to end the loop, and the agent doesn't infer termination from a provider signal that the model didn't author.
+To surface progress text to an end user (e.g. stream it), register an `on_iteration` hook and read `response.content`:
 
-> **`continue_loop` keeps the loop running; `finish` ends it.** When the model calls `continue_loop` (with or without other tool calls in the same turn), coreouto executes it like any other tool, appends the result, and continues the loop. The loop only ends when the model calls `finish` (or when an unrecoverable provider termination is reached).
+```python
+import coreouto as co
+
+def show_progress(*, response, **kwargs):
+    if response.content:
+        print(f"Progress: {response.content}")
+
+co.register_hook("on_iteration", show_progress)
+```
+
+The `on_iteration` hook fires every iteration with the full `LLMResponse`, so `response.content` captures any progress text the model emitted alongside its tool calls.
+
+### `max_output_tokens` truncation pitfall
+
+> **`max_output_tokens` too small truncates tool calls.** If the provider's output token limit (`max_tokens` / `max_output_tokens`) is set too low, the model's response can be cut off mid-generation. When the cut falls inside a tool-call's JSON, the tool call becomes unparseable and is dropped — so the turn ends with no executable tool call. Depending on the provider, this surfaces either as an unrecoverable `max_tokens`/`length` termination (the loop ends with `stop_reason="max_tokens"`, often with empty or partial content) or, worse, as a content-only turn that terminates the loop prematurely before the intended tool work happened. Always set the output token limit high enough to fit the model's full response including any tool-call JSON.
 
 ## Hooks during the loop
 
@@ -253,7 +253,7 @@ Seven hook events fire during the loop. See [Hooks](hooks.md) for details:
 - `before_tool_call` -- before each tool execution
 - `after_tool_call` -- after each tool result
 - `on_iteration` -- at the end of each iteration
-- `on_finish` -- when the loop terminates (the model called the `finish` tool, or an unrecoverable provider termination was reached)
+- `on_finish` -- when the loop terminates (text content with no tool calls, or an unrecoverable provider termination)
 - `on_user_injection` -- when a user message is injected via `Agent.inject_user_message`
 
 ## Provider config
@@ -275,7 +275,7 @@ config = co.AgentConfig(
 
 ### What if the model never terminates?
 
-The loop keeps calling the LLM. Under the model-driven termination policy, the only ways the loop can end are: the model calls `finish`, the provider emits an unrecoverable termination, or `max_iterations` is reached. A text-only turn without `finish` is re-prompted — the model gets another chance to call more tools or call `finish`. The previous assistant message stays in the conversation so the model can see what it produced and adjust on the next iteration.
+The loop keeps calling the LLM. The loop ends when the model produces a response with text content and no tool calls, when an unrecoverable provider termination occurs, or when `max_iterations` is reached. If the model keeps issuing tool calls indefinitely and `max_iterations` is not set, the loop runs forever. Set `max_iterations` to guard against that.
 
 ### Tracking finish events with hooks
 
