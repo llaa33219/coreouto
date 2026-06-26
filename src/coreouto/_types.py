@@ -214,9 +214,7 @@ class AgentConfig(BaseModel):
             names = ", ".join(sorted(repr(n) for n in conflicts))
             raise ValueError(
                 f"{names} are reserved tool names injected automatically by the agent "
-                f"loop. Remove them from `tools`. The `continue_loop` tool sends text to "
-                f"the user mid-task without ending the loop; the `finish` tool ends the "
-                f"loop and returns its argument as the final answer."
+                f"loop. Remove them from `tools`."
             )
         return self
 

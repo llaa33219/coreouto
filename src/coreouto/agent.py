@@ -32,90 +32,18 @@ from coreouto.providers import get_provider
 from coreouto.settings import normalize_provider_config
 from coreouto.tools import Tool, get_tool
 
-CONTINUE_LOOP_TOOL_NAME = "continue_loop"
-FINISH_TOOL_NAME = "finish"
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
 
-# Provider-specific sets of stop_reason / finish_reason / status values
-# that mean "the response is a termination attempt" under coreouto's
-# two-step termination policy. There are two kinds:
-#
-# 1. **Unrecoverable termination attempts** — the provider refused, the
-#    run was cancelled, the response was filtered for content, the
-#    output hit a hard limit. The loop terminates these immediately
-#    even if the model didn't call `finish`. (coreouto surfaces the
-#    exact reason on `Response.stop_reason` so callers can
-#    distinguish a non-clean termination from a clean `finish`.)
-#
-# 2. **Tentative termination attempts** — the provider emitted a
-#    natural end-of-turn signal (`end_turn`, `stop`, `completed`,
-#    `STOP`, `tool_use`, `pause_turn`, `tool_calls`, ...) without a
-#    `finish` call. The loop treats these as the model "thinking it's
-#    done" — it injects a confirmation user message and re-prompts
-#    the model. The model's next turn either calls `finish` (loop
-#    ends) or calls more tools (loop continues). This is the
-#    "explicitness" guarantee: the model declares its intent to end
-#    the loop through a tool call, not via a provider's natural
-#    end-of-turn field that the model didn't author.
-#
-# The pi-mono team faced the same issue: models frequently "think
-# they're done" and emit a natural end-of-turn signal without
-# explicitly closing the loop, then the loop never terminates. They
-# solved it with a per-tool `terminate: true` flag that all tools in
-# a batch must agree on. coreouto's approach is simpler: a single
-# dedicated `finish` tool, with a confirmation prompt on the
-# tentative-attempt path.
+# Provider-specific stop_reason / finish_reason / status values that mean
+# "the provider terminated unrecoverably". These end the loop immediately,
+# even if the response contains tool calls — the provider refused,
+# truncated, filtered, or cancelled the response, so coreouto must NOT
+# execute any tool calls it may carry.
 _ANTHROPIC_TERMINATE_REASONS = frozenset({"max_tokens", "refusal"})
-# Natural end-of-turn values from Anthropic. These are TENTATIVE
-# termination attempts — the model "thinks it's done" but didn't
-# call `finish`. The loop treats them as termination attempts and
-# injects a confirmation user message; the model's next turn
-# either calls `finish` (terminate) or calls more tools (continue).
-_ANTHROPIC_NATURAL_END_REASONS = frozenset({"end_turn", "stop_sequence"})
-# Continuation values from Anthropic. These are NOT termination
-# attempts — the model is mid-task, the loop should keep going.
-# `tool_use` means the model called tools (loop must execute them).
-# `pause_turn` means the server-side sampling loop hit its iteration
-# limit (default 10) while running server tools like web search /
-# web fetch; the official guidance is to send the assistant
-# response back as-is in a new request so the loop can continue
-# (see Anthropic SDK issue #1170 and the SDK docstring on
-# `Message.stop_reason`).
-_ANTHROPIC_CONTINUE_REASONS = frozenset({"tool_use", "pause_turn"})
-
 _OPENAI_CHAT_TERMINATE_REASONS = frozenset({"length", "content_filter"})
-# Natural end-of-turn value from OpenAI Chat. `stop` means the
-# model hit a natural stop point or a provided stop sequence.
-# The loop treats it as a tentative termination attempt and
-# injects a confirmation user message.
-_OPENAI_CHAT_NATURAL_END_REASONS = frozenset({"stop"})
-# Continuation values from OpenAI Chat. These mean the model
-# called a tool/function and the loop must execute the call(s)
-# before re-prompting. `tool_calls` is the modern field;
-# `function_call` is the deprecated predecessor with the same
-# meaning (per the SDK docstring: "the model called a function").
-_OPENAI_CHAT_CONTINUE_REASONS = frozenset({"tool_calls", "function_call"})
-
-# OpenAI Responses API: these are the unrecoverable terminal
-# statuses — server rejected, user cancelled, content filter
-# tripped. They terminate the loop regardless of `finish`.
 _OPENAI_RESPONSES_TERMINATE_STATUSES = frozenset(
-    {
-        "failed",
-        "cancelled",
-        "incomplete:content_filter",
-    }
+    {"failed", "cancelled", "incomplete:content_filter"}
 )
-# Natural end-of-turn values from OpenAI Responses.
-_OPENAI_RESPONSES_NATURAL_END_STATUSES = frozenset(
-    {
-        "completed",
-        "incomplete",
-        "incomplete:max_output_tokens",
-    }
-)
-
-# Google Gemini: these are the unrecoverable finish_reasons.
 _GOOGLE_TERMINATE_REASONS = frozenset(
     {
         "MAX_TOKENS",
@@ -133,36 +61,15 @@ _GOOGLE_TERMINATE_REASONS = frozenset(
         "NO_IMAGE",
     }
 )
-# Natural end-of-turn values from Google Gemini. `STOP` is the
-# natural completion; the others are placeholder/parse-failure
-# values from the SDK.
-_GOOGLE_NATURAL_END_REASONS = frozenset(
-    {
-        "STOP",
-        "FINISH_REASON_UNSPECIFIED",
-        "UNEXPECTED_TOOL_CALL",
-        "MALFORMED_FUNCTION_CALL",
-    }
-)
-
-
-def _called_finish(tool_calls: list[ToolCall]) -> bool:
-    """True iff the response included a `finish` tool call.
-
-    The `finish` tool is the model's explicit declaration that the loop
-    should end and that the supplied `content` is the final answer. Any
-    other tool call without `finish` keeps the loop running.
-    """
-    return any(tc.name == FINISH_TOOL_NAME for tc in tool_calls)
 
 
 def _is_unrecoverable_termination(provider: str, stop_reason: str | None) -> bool:
-    """True iff the provider's stop field carries a value that cannot be
-    papered over by re-prompting the model.
+    """True iff the provider's stop field carries a value that forces
+    immediate loop termination.
 
-    Unrecoverable terminations end the loop even if the model did not
-    call `finish`. Tool calls in the same response are NOT executed
-    (the provider flagged the response as unsafe / rejected).
+    Unrecoverable terminations end the loop immediately. Tool calls in the
+    same response are NOT executed (the provider flagged the response as
+    unsafe / rejected / truncated).
     """
     if provider == "anthropic":
         return stop_reason in _ANTHROPIC_TERMINATE_REASONS
@@ -175,99 +82,12 @@ def _is_unrecoverable_termination(provider: str, stop_reason: str | None) -> boo
     return False
 
 
-def _should_terminate(provider: str, stop_reason: str | None, tool_calls: list[ToolCall]) -> bool:
-    """Classify whether the current response is a **termination attempt**.
-
-    Under coreouto's two-step termination policy, the loop only ends when
-    the model calls the `finish` tool. This function detects the *first*
-    step: a response that qualifies as a termination attempt. The
-    `Agent.call()` loop then checks whether the response actually
-    contains a `finish` call. If yes, terminate. If no (the provider
-    emitted a natural end-of-turn signal but the model forgot to call
-    `finish`), inject a confirmation user message and re-prompt the
-    model — the model's next turn either calls `finish` (terminate) or
-    calls more tools (continue).
-
-    A response is a termination attempt iff one of these is true:
-
-    - The model called the `finish` tool. The loop will terminate
-      immediately on the next line.
-    - The provider's stop field carries an unrecoverable termination
-      value: `max_tokens`, `refusal`, `length`, `content_filter`,
-      `SAFETY`, `failed`, `cancelled`, `incomplete:content_filter`.
-      These cannot be papered over by re-prompting, so the loop will
-      terminate even without a `finish` call.
-    - The provider's stop field carries a natural end-of-turn value
-      (`end_turn`, `stop`, `completed`, `STOP`, `pause_turn`,
-      `tool_calls`, `function_call`, ...) **AND** the response has no
-      non-`finish` tool calls (i.e. it's a tentative "I'm done" turn).
-      The loop will inject a confirmation message rather than
-      terminate immediately.
-
-    Per-provider detail:
-
-    - **Anthropic** (`stop_reason`): unrecoverable values
-      (`max_tokens`, `refusal`) are termination attempts. `end_turn`,
-      `stop_sequence`, `tool_use`, `pause_turn` are tentative
-      termination attempts (the model didn't call `finish`); the loop
-      injects a confirmation. Unknown values are NOT termination
-      attempts — the loop continues.
-    - **OpenAI Chat Completions** (`finish_reason`): unrecoverable
-      values (`length`, `content_filter`) are termination attempts.
-      `stop` and the legacy `function_call` are tentative
-      terminations; `tool_calls` is a tentative termination only when
-      no tool calls were actually produced (rare).
-    - **OpenAI Responses API** (`status`): unrecoverable values
-      (`failed`, `cancelled`, `incomplete:content_filter`) are
-      termination attempts. `completed`, `incomplete`,
-      `incomplete:max_output_tokens` are tentative terminations.
-    - **Google Gemini** (`finish_reason`): unrecoverable values
-      (`MAX_TOKENS`, `SAFETY`, `RECITATION`, ...) are termination
-      attempts. `STOP`, `FINISH_REASON_UNSPECIFIED`,
-      `UNEXPECTED_TOOL_CALL`, `MALFORMED_FUNCTION_CALL` are tentative
-      terminations.
-    - **Unknown providers**: only the explicit `finish` tool call
-      ends the loop. Without it, the loop re-prompts the model.
-    """
-    if _called_finish(tool_calls):
-        # Explicit termination — the model called the `finish` tool.
-        # This is the canonical end-of-loop signal and overrides the
-        # provider's stop_reason (including the unrecoverable values,
-        # because the model may have called `finish` and then hit a
-        # token cap simultaneously).
-        return True
-
-    if provider == "anthropic":
-        return stop_reason in (_ANTHROPIC_TERMINATE_REASONS | _ANTHROPIC_NATURAL_END_REASONS)
-
-    if provider == "openai":
-        return stop_reason in (_OPENAI_CHAT_TERMINATE_REASONS | _OPENAI_CHAT_NATURAL_END_REASONS)
-
-    if provider == "openai-response":
-        return stop_reason in (
-            _OPENAI_RESPONSES_TERMINATE_STATUSES | _OPENAI_RESPONSES_NATURAL_END_STATUSES
-        )
-
-    if provider == "google":
-        return stop_reason in (_GOOGLE_TERMINATE_REASONS | _GOOGLE_NATURAL_END_REASONS)
-
-    # Unknown provider: only the `finish` tool call ends the loop.
-    # Continuation values (tool_use, pause_turn, tool_calls, etc.)
-    # are also non-terminating — only END/NATURAL_END trigger this
-    # function to return True.
-    return False
-
-
 def _classify_finish(provider: str, stop_reason: str | None) -> StopReason:
     """Map a raw provider stop_reason to the Response.stop_reason literal.
 
-    `"finish"` is the generic "the model finished naturally" value — but
-    under the new model-driven policy, the only way to reach this
-    function is via the model's `finish` tool call (the
-    non-recoverable terminations still go through this classifier when
-    no `finish` was involved, and they surface their own literals).
-    The other literals surface non-clean terminations so callers can
-    distinguish a refusal from a length cap from a successful finish.
+    `"finish"` is the generic clean-termination value. The other literals
+    surface non-clean terminations so callers can distinguish a refusal
+    from a length cap from a successful finish.
     """
     if provider == "anthropic":
         if stop_reason == "max_tokens":
@@ -301,72 +121,12 @@ def _classify_finish(provider: str, stop_reason: str | None) -> StopReason:
     return "finish"
 
 
-_CONTINUE_LOOP_TOOL = Tool(
-    name=CONTINUE_LOOP_TOOL_NAME,
-    description=(
-        "Send text to the user mid-task without ending the agent loop. Use for "
-        "progress updates when you still intend to call more tools. The `content` "
-        "argument is shown to the user; the loop continues."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": "The text to deliver to the user this turn.",
-            },
-        },
-        "required": [],
-    },
-    handler=lambda content="": content,
-    parallelizable=True,
-)
-
-
-_FINISH_TOOL = Tool(
-    name=FINISH_TOOL_NAME,
-    description=(
-        "End the agent loop and return `content` to the caller as the final "
-        "answer. Call this when you are done. After calling `finish` the loop "
-        "stops — this is the only way to close the loop under coreouto's "
-        "model-driven termination policy (a text-only turn without `finish` "
-        "will be re-prompted)."
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "content": {
-                "type": "string",
-                "description": "The final answer to return to the user.",
-            },
-        },
-        "required": [],
-    },
-    handler=lambda content="": content,
-    parallelizable=True,
-)
-
-
-def _extract_finish_content(tool_calls: list[ToolCall]) -> str:
-    """Return the `content` argument of the first `finish` tool call in the
-    response. The model may emit `finish` alongside other tool calls in a
-    single turn; we take the first `finish` call's content as the final
-    answer.
-    """
-    for tc in tool_calls:
-        if tc.name == FINISH_TOOL_NAME:
-            value = tc.arguments.get("content", "")
-            return value if isinstance(value, str) else str(value)
-    return ""
-
-
 _DEFAULT_SYSTEM_PROMPT = (
-    "You are an agent. Use tools to gather information as needed.\n\n"
-    "The `finish` tool ends the agent loop and returns its `content` argument "
-    "to the caller as the final answer. Call `finish` when you are done.\n\n"
-    "The `continue_loop` tool sends text to the user mid-task but keeps the "
-    "loop running for more tools. Use it for progress updates before calling "
-    "more tools or before calling `finish`.\n"
+    "You are an agent. Use tools to gather information and take actions.\n\n"
+    "The loop runs as long as you call tools. To deliver your final answer and "
+    "end the loop, respond with text and no tool calls — that text becomes the "
+    "response. To share progress while still working, include the text alongside "
+    "a tool call in the same turn.\n"
 )
 
 
@@ -486,7 +246,7 @@ class Agent:
                 raise KeyError(f"tool not registered: {name!r}")
             resolved_tools.append(tool)
 
-        effective_tools: list[Tool] = [*resolved_tools, _CONTINUE_LOOP_TOOL, _FINISH_TOOL]
+        effective_tools: list[Tool] = list(resolved_tools)
 
         messages: list[Message] = []
         if cfg.system_prompt:
@@ -551,43 +311,14 @@ class Agent:
             )
 
             tool_calls = list(response.tool_calls)
-            has_finish = _called_finish(tool_calls)
-            non_finish_tool_calls = [tc for tc in tool_calls if tc.name != FINISH_TOOL_NAME]
             is_unrecoverable = _is_unrecoverable_termination(cfg.provider, response.stop_reason)
 
-            if has_finish:
-                # The model called `finish` — terminate. The
-                # canonical final answer is the `finish` tool call's
-                # `content` argument. Any non-`finish` tool calls on
-                # the same turn are dropped when this is also an
-                # unrecoverable termination (the provider refused to
-                # deliver the response, so coreouto refuses to
-                # execute its tool calls — a security/correctness
-                # requirement).
-                finish_content = _extract_finish_content(tool_calls)
-                final_answer = finish_content or (response.content or "")
-
-                await trigger(
-                    ON_FINISH,
-                    content=final_answer,
-                    messages=messages,
-                    iterations=iterations,
-                )
-                stop_reason: StopReason = _classify_finish(cfg.provider, response.stop_reason)
-                return Response(
-                    content=final_answer,
-                    messages=messages,
-                    iterations=iterations,
-                    usage=all_usage,
-                    stop_reason=stop_reason,
-                )
-
-            if is_unrecoverable and not non_finish_tool_calls:
-                # Unrecoverable provider termination without `finish`
-                # and without other tool calls. The provider refused
-                # to deliver, the run was cancelled, etc. Terminate
-                # anyway and surface the provider signal on
-                # `Response.stop_reason`.
+            if is_unrecoverable:
+                # Unrecoverable provider termination (max_tokens, refusal,
+                # content_filter, SAFETY, failed, cancelled, ...). The provider
+                # refused/truncated the response, so do NOT execute any tool
+                # calls it may contain. Terminate and surface the provider
+                # signal on Response.stop_reason.
                 final_answer = response.content or ""
 
                 await trigger(
@@ -605,87 +336,54 @@ class Agent:
                     stop_reason=stop_reason,
                 )
 
-            if is_unrecoverable and non_finish_tool_calls:
-                # Unrecoverable termination with non-`finish` tool
-                # calls. The provider refused to deliver this
-                # response (SAFETY, refusal, content_filter, etc.),
-                # so coreouto drops the tool calls and terminates.
-                # Executing a tool that the provider flagged as
-                # unsafe would be a security/correctness issue.
-                final_answer = response.content or ""
+            if not tool_calls:
+                if response.content:
+                    # Content (text) + no tool calls — the model is done. The
+                    # assistant text is the final answer. This is the canonical
+                    # end-of-loop signal under coreouto's termination policy.
+                    final_answer = response.content
 
-                await trigger(
-                    ON_FINISH,
-                    content=final_answer,
-                    messages=messages,
-                    iterations=iterations,
-                )
-                stop_reason: StopReason = _classify_finish(cfg.provider, response.stop_reason)
-                return Response(
-                    content=final_answer,
-                    messages=messages,
-                    iterations=iterations,
-                    usage=all_usage,
-                    stop_reason=stop_reason,
-                )
-
-            if non_finish_tool_calls:
-                # The model emitted regular tool calls (not `finish`)
-                # on a recoverable turn. Execute them — the model is
-                # mid-task, not terminating.
-                resolved: list[tuple[ToolCall, Tool | None]] = []
-                for tc in non_finish_tool_calls:
-                    user_tool = get_tool(tc.name)
-                    if user_tool is not None:
-                        resolved.append((tc, user_tool))
-                    else:
-                        injected_tool = next(
-                            (t for t in effective_tools if t.name == tc.name), None
-                        )
-                        resolved.append((tc, injected_tool))
-                all_parallelizable = cfg.parallel_tool_calls and all(
-                    tool is not None and tool.parallelizable for _, tool in resolved
-                )
-
-                if all_parallelizable and len(non_finish_tool_calls) > 1:
-                    results = await asyncio.gather(
-                        *(_run_one_tool_call(tc, tool) for tc, tool in resolved)
+                    await trigger(
+                        ON_FINISH,
+                        content=final_answer,
+                        messages=messages,
+                        iterations=iterations,
                     )
-                else:
-                    results = []
-                    for tc, tool in resolved:
-                        results.append(await _run_one_tool_call(tc, tool))
-
-                for tool_call, result in zip(non_finish_tool_calls, results, strict=False):
-                    tool_msg = provider.format_tool_result(tool_call, result)
-                    messages.append(tool_msg)
+                    stop_reason: StopReason = _classify_finish(cfg.provider, response.stop_reason)
+                    return Response(
+                        content=final_answer,
+                        messages=messages,
+                        iterations=iterations,
+                        usage=all_usage,
+                        stop_reason=stop_reason,
+                    )
+                # No content and no tool calls (e.g. a thinking-only turn, or
+                # an otherwise empty response). The model produced neither an
+                # answer nor an action, so treat it as "still working": continue
+                # the loop (re-prompt) rather than terminating with an empty
+                # answer. The loop is still bounded by max_iterations.
                 continue
 
-            # No `finish` call, no non-`finish` tool calls. The
-            # termination path depends on the provider's stop
-            # signal:
-            #
-            # - If `_should_terminate` returns True (the provider
-            #   emitted an END or NATURAL_END signal), this is a
-            #   tentative termination attempt. Inject a
-            #   confirmation user message and re-prompt the model.
-            #   The next turn either calls `finish` (terminate) or
-            #   calls more tools (continue). This handles models
-            #   that forget to call `finish` (a real-world
-            #   reliability issue noted by the pi-mono team when
-            #   they introduced their `terminate` tool-result
-            #   flag).
-            #
-            # - Otherwise the stop signal is a CONTINUE value
-            #   (`tool_use`, `pause_turn`, `tool_calls`,
-            #   `function_call`, or any other non-terminating
-            #   value). The model is mid-task or the server says
-            #   keep going — re-prompt without injecting a
-            #   confirmation.
-            if _should_terminate(cfg.provider, response.stop_reason, tool_calls):
-                self.inject_user_message(
-                    "Your turn ended without calling the `finish` tool. "
-                    "If you are done, call `finish(content=...)` with your "
-                    "final answer. If you want to keep working, call more "
-                    "tools or `continue_loop(content=...)`."
+            # Tool calls present on a recoverable turn — execute them and
+            # continue the loop. The model is mid-task.
+            resolved: list[tuple[ToolCall, Tool | None]] = []
+            for tc in tool_calls:
+                user_tool = get_tool(tc.name)
+                resolved.append((tc, user_tool))
+            all_parallelizable = cfg.parallel_tool_calls and all(
+                tool is not None and tool.parallelizable for _, tool in resolved
+            )
+
+            if all_parallelizable and len(tool_calls) > 1:
+                results = await asyncio.gather(
+                    *(_run_one_tool_call(tc, tool) for tc, tool in resolved)
                 )
+            else:
+                results = []
+                for tc, tool in resolved:
+                    results.append(await _run_one_tool_call(tc, tool))
+
+            for tool_call, result in zip(tool_calls, results, strict=False):
+                tool_msg = provider.format_tool_result(tool_call, result)
+                messages.append(tool_msg)
+            # loop continues to next iteration

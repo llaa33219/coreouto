@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from coreouto.tools import (
+    RESERVED_TOOL_NAMES,
     Tool,
     clear_tools,
     extract_schema,
@@ -113,19 +114,19 @@ class TestRegisterTool:
         decorated = register_tool("orig")(orig)
         assert decorated is orig
 
-    def test_register_tool_continue_loop_name_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"reserved tool name"):
+    def test_reserved_names_empty_allows_any_name(self) -> None:
+        @register_tool("finish")
+        def finish_tool(x: int) -> int:
+            return x
 
-            @register_tool("continue_loop")
-            def continue_loop_tool(x: int) -> int:
-                return x
+        @register_tool("continue_loop")
+        def continue_loop_tool(x: int) -> int:
+            return x
 
-    def test_register_tool_finish_name_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"reserved tool name"):
-
-            @register_tool("finish")
-            def finish_tool(x: int) -> int:
-                return x
+        assert get_tool("finish") is not None
+        assert get_tool("finish").handler is finish_tool
+        assert get_tool("continue_loop") is not None
+        assert get_tool("continue_loop").handler is continue_loop_tool
 
 
 class TestRegisterToolClass:
@@ -149,16 +150,23 @@ class TestRegisterToolClass:
         with pytest.raises(ValueError, match="class-based tools require explicit handler"):
             register_tool_class("bad", MyClass)
 
-    def test_register_tool_class_continue_loop_name_raises(self) -> None:
+    def test_register_tool_class_continue_loop_name_succeeds(self) -> None:
         class MyClass:
             def method(self, value: int) -> int:
                 return value * 2
 
-        with pytest.raises(ValueError, match=r"'continue_loop' is a reserved tool name"):
-            register_tool_class("continue_loop", MyClass, handler=MyClass().method)
+        instance = MyClass()
+        register_tool_class("continue_loop", MyClass, handler=instance.method)
+        tool = get_tool("continue_loop")
+        assert tool is not None
+        assert tool.name == "continue_loop"
+        assert tool.handler.__func__ is instance.method.__func__
 
 
 class TestRegistry:
+    def test_reserved_tool_names_is_empty(self) -> None:
+        assert frozenset() == RESERVED_TOOL_NAMES
+
     def test_get_tool_missing_returns_none(self) -> None:
         assert get_tool("missing") is None
 

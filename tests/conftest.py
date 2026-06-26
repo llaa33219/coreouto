@@ -17,7 +17,7 @@ import pytest
 # native field (Anthropic `stop_reason`, OpenAI Chat `finish_reason`,
 # OpenAI Responses `status`, Gemini `finishReason`) into a single string
 # exposed on `LLMResponse.stop_reason`. Tests use this table so a response
-# without an explicit `stop_reason` still terminates the loop when run
+# without an explicit `stop_reason` gets a sensible default when run
 # against any of the supported providers.
 _PROVIDER_END_REASONS: dict[str, str] = {
     "anthropic": "end_turn",
@@ -37,17 +37,11 @@ class MockLLMResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
-    # Default (`_UNSET`) means "fill in the provider's natural end-of-turn
-    # value when the response is consumed". Tests that want a non-terminating
-    # or provider-specific stop_reason (e.g. `"tool_use"`, `"SAFETY"`, or
-    # `None` to simulate a legacy SDK) set it explicitly.
+    # Default (`_UNSET`) means "fill in the provider's default end-of-turn
+    # value when the response is consumed". Tests that want a provider-specific
+    # or non-terminating stop_reason (e.g. `"tool_use"`, `"SAFETY"`, or `None`
+    # to simulate a legacy SDK) set it explicitly.
     stop_reason: Any = _UNSET
-    # When True (the default) `MockProvider._next` will inject a `finish`
-    # tool call into the response if one isn't already present, so the
-    # loop terminates under coreouto's model-driven termination policy.
-    # Tests that need a non-terminating response (e.g. those that queue
-    # multiple responses to test multi-iteration flows) set this to False.
-    terminate: bool = True
 
 
 class MockProvider:
@@ -80,25 +74,6 @@ class MockProvider:
         self._index += 1
         if r.stop_reason is _UNSET:
             r.stop_reason = _PROVIDER_END_REASONS.get(provider)
-        # Only auto-inject a `finish` tool call when the response has no
-        # other tool calls. A response with a non-`finish` tool call
-        # (e.g. `echo`, `continue_loop`) is the model mid-task — the
-        # loop must continue, not terminate. Tests can override this
-        # with `terminate=True` to force-append a `finish` to a
-        # mid-task-style response.
-        if (
-            r.terminate
-            and not r.tool_calls
-            and not any(tc.get("name") == "finish" for tc in r.tool_calls)
-        ):
-            finish_id = f"finish_{r.prompt_tokens}_{r.completion_tokens}_{self._index}"
-            r.tool_calls.append(
-                {
-                    "id": finish_id,
-                    "name": "finish",
-                    "arguments": {"content": r.content or ""},
-                }
-            )
         return r
 
     async def create(
