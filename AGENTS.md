@@ -5,7 +5,7 @@ This file guides AI coding agents working on the coreouto codebase.
 ## What coreouto is
 
 A minimal Python agent library for PyPI. The entire core is one loop:
-**call → internal loop → `Response` when the model calls the `finish` tool** (the `content` argument of that call becomes the final answer). The termination policy is **two-step** (modeled on [pi-mono's](https://github.com/badlogic/pi-mono) `terminate` flag): if the model's turn ends with a natural end-of-turn signal but no `finish` call, the loop injects a confirmation user message and re-prompts; the model's next turn either calls `finish` (terminate) or calls more tools (continue). Unrecoverable provider terminations (token cap, refusal, content filter, server-side failure) still end the loop without `finish` — see `_should_terminate` in `src/coreouto/agent.py` for the full policy. To output text without ending the loop, the model calls the `continue_loop` tool.
+**call → internal loop → `Response` when the model produces a response with text content and no tool calls** (that response's text becomes the final answer). Unrecoverable provider terminations (token cap, refusal, content filter, server-side failure) end the loop immediately, checked before tool execution — tool calls on a refused/truncated response are dropped. To output text without ending the loop, the model includes progress text alongside a tool call in the same turn.
 
 ## The five philosophies (NON-NEGOTIABLE)
 

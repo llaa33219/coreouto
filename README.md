@@ -8,7 +8,7 @@
 
 Built on five philosophies: **minimalism, extensibility, explicitness, fragmentation, conciseness.**
 
-The whole library reduces to one idea: an agent is called with a message, runs an internal loop, and returns its response when the model calls the `finish` tool — the `content` argument of the `finish` call becomes the final answer. If the model's turn ends without a `finish` call (the model "thinks it's done" but didn't say so explicitly), the loop injects a confirmation user message and re-prompts; the model's next turn either calls `finish` (terminate) or calls more tools (continue). Unrecoverable provider terminations (token cap, refusal, content filter, server-side failure) still end the loop without `finish`. To output text without ending the loop (e.g. share progress before calling more tools), the model calls the `continue_loop` tool. Everything else — providers, tools, presets, hooks, multi-agent — is an opt-in extension.
+The whole library reduces to one idea: an agent is called with a message, runs an internal loop, and returns its response when the model produces a response with text content and no tool calls — that response's text becomes the final answer. Unrecoverable provider terminations (token cap, refusal, content filter, server-side failure) also end the loop. Everything else — providers, tools, presets, hooks, multi-agent — is an opt-in extension.
 
 ```python
 import os
