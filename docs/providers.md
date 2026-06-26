@@ -61,7 +61,7 @@ co.register_agent_preset(
 
 > **Note**: On Claude Opus 4.7+ and Claude Fable 5 / Mythos 5, sampling parameters (`temperature`, `top_p`, `top_k`) are rejected by the API. coreouto forwards whatever you set in `provider_config` as-is — pass `None` (or omit them) for those models.
 
-With extended thinking enabled, a turn can return only `thinking` blocks (no text, no tool_use). coreouto handles this — the response's `content` will be `None` and `tool_calls` empty, and the loop will inject a confirmation user message and re-prompt as usual.
+With extended thinking enabled, a turn can return only `thinking` blocks (no text, no tool_use). Under coreouto's termination policy, a response needs **text content** to end the loop — a thinking-only turn with no text and no tool calls does not terminate; the loop continues (re-prompts) until the model emits text content or a tool call. Prompts for thinking models should still steer the model to emit a final text answer when it is done.
 
 Install: `pip install coreouto[anthropic]`
 
@@ -349,6 +349,8 @@ The same `provider_config` works across all four built-in providers.
 - Standard keys whose value is `None` are dropped before sending to the SDK.
 - Standard keys not supported by the chosen provider raise `ValueError` with a helpful message.
 - Non-canonical keys raise `ValueError`; use `provider_passthrough` for those (see below).
+
+> **Note:** Setting `max_tokens` too low can truncate tool-call JSON, causing dropped tool calls and premature loop termination. See [Agent — `max_output_tokens` truncation pitfall](agent.md#max_output_tokens-truncation-pitfall).
 
 ### Routing across endpoints
 

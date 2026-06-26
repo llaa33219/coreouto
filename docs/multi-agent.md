@@ -177,7 +177,7 @@ co.register_agent_preset(
     system_prompt=(
         "You coordinate work. Use `call_agent` to delegate tasks. "
         "Pass the agent name and a message. When you are done, respond with text and no tool calls to end the loop. "
-        "If you need to share progress while still doing more work, call the `continue_loop` tool."
+        "If you need to share progress while still doing more work, include the text alongside a tool call."
     ),
     tools=["call_agent"],
 )
