@@ -18,6 +18,7 @@ _EXPECTED_NAMES = [
     "Message",
     "ON_FINISH",
     "ON_ITERATION",
+    "ON_RETRY",
     "ON_USER_INJECTION",
     "RESERVED_TOOL_NAMES",
     "Response",
@@ -94,6 +95,7 @@ def test_hook_constants_are_strings():
         coreouto.ON_ITERATION,
         coreouto.ON_FINISH,
         coreouto.ON_USER_INJECTION,
+        coreouto.ON_RETRY,
     ):
         assert isinstance(const, str)
 

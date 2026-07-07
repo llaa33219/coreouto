@@ -2,7 +2,7 @@
 
 Hooks let you inject behavior at specific points in the agent loop without modifying the core. Register a function for an event and it fires every time that event occurs.
 
-## The seven events
+## The eight events
 
 | Event              | When it fires                        | Keyword arguments                                      |
 |--------------------|--------------------------------------|--------------------------------------------------------|
@@ -13,10 +13,22 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `on_iteration`     | At the end of each loop iteration    | `iteration`, `messages`, `response`                    |
 | `on_finish`        | When the loop terminates (text content with no tool calls, or an unrecoverable provider termination) | `content`, `messages`, `iterations` |
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
+| `on_retry`         | Before each retry sleep, when `retry_intervals` is set and a provider call raised | `attempt`, `interval`, `error`, `messages`, `model` |
 
 ### The on_finish event
 
 Fires when the loop terminates, which happens when the model produces a response with text content and no tool calls (a clean termination — the assistant text is the final answer) or when an unrecoverable provider termination is reached (`max_tokens` / `length` / `refusal` / `content_filter` / `incomplete:content_filter` / `SAFETY` / `failed` / `cancelled`). The `content` kwarg is the final answer — the assistant text from the terminating response, or the response text as a fallback when the loop ended via a provider termination. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
+
+### The on_retry event
+
+Fires before each retry sleep when `AgentConfig.retry_intervals` is set and a provider call raised. The `attempt` kwarg is 1-indexed (first retry = `1`), `interval` is the seconds that will be slept, and `error` is the exception from the failed call. `before_llm_call` / `after_llm_call` bracket the logical per-iteration LLM call and fire once per iteration regardless of how many retries happened underneath, so `on_retry` is the canonical place to observe transport-level retries. See [Agent — Retrying failed API calls](agent.md#retrying-failed-api-calls).
+
+```python
+def log_retry(*, attempt, interval, error, **kwargs):
+    print(f"retry #{attempt} after {interval}s: {type(error).__name__}")
+
+co.register_hook(co.ON_RETRY, log_retry)
+```
 
 ## Registering a hook
 
@@ -198,6 +210,7 @@ co.AFTER_TOOL_CALL   # "after_tool_call"
 co.ON_ITERATION      # "on_iteration"
 co.ON_FINISH         # "on_finish"
 co.ON_USER_INJECTION # "on_user_injection"
+co.ON_RETRY          # "on_retry"
 ```
 
 Use whichever form you prefer. The string literals are more readable in examples; the constants protect against typos.

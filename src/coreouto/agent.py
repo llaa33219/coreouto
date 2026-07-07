@@ -25,6 +25,7 @@ from coreouto.hooks import (
     BEFORE_TOOL_CALL,
     ON_FINISH,
     ON_ITERATION,
+    ON_RETRY,
     ON_USER_INJECTION,
     trigger,
 )
@@ -179,6 +180,63 @@ def _invoke_sync_handler(handler: Any, arguments: dict[str, Any]) -> Any:
     return handler(**arguments)
 
 
+async def _create_with_retry(
+    provider: Any,
+    *,
+    messages: list[Message],
+    model: str,
+    tools: list[Tool],
+    extra_kwargs: dict[str, Any],
+    retry_intervals: list[float] | None,
+) -> Any:
+    """Call ``provider.create`` with optional retry on exception.
+
+    ``retry_intervals`` is the list of seconds to wait before each retry.
+    ``None`` or an empty list means no retry — the first exception propagates
+    immediately (current behavior). Each entry drives one retry attempt:
+    after a failed initial call, the loop sleeps ``intervals[0]`` and retries,
+    on failure sleeps ``intervals[1]`` and retries, and so on. When every
+    interval is exhausted the last exception is re-raised.
+
+    Any ``Exception`` raised by ``provider.create`` triggers a retry. This
+    covers network, timeout, rate-limit, and server errors uniformly across
+    providers without coreouto having to import provider-specific exception
+    types. A programmer error (bad kwargs) will simply fail again on each
+    retry and surface after the intervals are spent.
+
+    Fires ``ON_RETRY`` before each sleep with ``{attempt, interval, error,
+    messages, model}`` so callers can log or observe retries. The existing
+    ``BEFORE_LLM_CALL`` / ``AFTER_LLM_CALL`` hooks bracket the logical
+    per-iteration LLM call and fire once per iteration regardless of retries.
+    """
+    if not retry_intervals:
+        return await provider.create(messages=messages, model=model, tools=tools, **extra_kwargs)
+
+    try:
+        return await provider.create(messages=messages, model=model, tools=tools, **extra_kwargs)
+    except Exception as exc:
+        last_exc = exc
+
+    for attempt, interval in enumerate(retry_intervals, start=1):
+        await trigger(
+            ON_RETRY,
+            attempt=attempt,
+            interval=interval,
+            error=last_exc,
+            messages=messages,
+            model=model,
+        )
+        await asyncio.sleep(interval)
+        try:
+            return await provider.create(
+                messages=messages, model=model, tools=tools, **extra_kwargs
+            )
+        except Exception as exc:
+            last_exc = exc
+
+    raise last_exc
+
+
 def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
     """Wrap a tool handler's return value into a ToolResult.
 
@@ -288,12 +346,13 @@ class Agent:
 
             normalized = normalize_provider_config(cfg.provider, cfg.provider_config)
             merged = {**normalized, **cfg.provider_passthrough}
-            response = await provider.create(
+            response = await _create_with_retry(
+                provider,
                 messages=messages,
                 model=cfg.model,
                 tools=effective_tools,
-                system_prompt=None,
-                **merged,
+                extra_kwargs={"system_prompt": None, **merged},
+                retry_intervals=cfg.retry_intervals,
             )
 
             await trigger(AFTER_LLM_CALL, response=response, messages=messages)

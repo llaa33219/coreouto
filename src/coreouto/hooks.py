@@ -11,6 +11,7 @@ AFTER_TOOL_CALL = "after_tool_call"
 ON_ITERATION = "on_iteration"
 ON_FINISH = "on_finish"
 ON_USER_INJECTION = "on_user_injection"
+ON_RETRY = "on_retry"
 
 _HOOKS: dict[str, list[Callable[..., Any]]] = {}
 

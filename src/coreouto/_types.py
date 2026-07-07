@@ -201,6 +201,7 @@ class AgentConfig(BaseModel):
     system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
+    retry_intervals: list[float] | None = None
     provider_config: dict[str, Any] = Field(default_factory=dict)
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
     parallel_tool_calls: bool = False
@@ -216,6 +217,16 @@ class AgentConfig(BaseModel):
                 f"{names} are reserved tool names injected automatically by the agent "
                 f"loop. Remove them from `tools`."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _retry_intervals_non_negative(self) -> AgentConfig:
+        if self.retry_intervals is not None:
+            for i, sec in enumerate(self.retry_intervals):
+                if sec < 0:
+                    raise ValueError(
+                        f"retry_intervals must be non-negative seconds; got {sec} at index {i}"
+                    )
         return self
 
 
