@@ -42,10 +42,15 @@ class FakePart:
     function_call: FakeFunctionCall | None = None
     function_response: FakeFunctionResponse | None = None
     inline_data: Any = None
+    thought: bool = False
 
     @classmethod
     def from_text(cls, text: str) -> FakePart:
         return cls(text=text)
+
+    @classmethod
+    def from_thought(cls, text: str) -> FakePart:
+        return cls(text=text, thought=True)
 
     @classmethod
     def from_function_call(cls, name: str, args: dict[str, Any]) -> FakePart:
@@ -79,6 +84,7 @@ class FakeUsageMetadata:
 @dataclass
 class FakeCandidate:
     content: FakeContent
+    finish_reason: Any = None
 
 
 @dataclass
@@ -99,10 +105,28 @@ class FakeGenerateContentResponse:
         return None
 
 
+class FakeStreamIterator:
+    def __init__(self, chunks: list[Any]) -> None:
+        self._chunks = chunks
+        self._index = 0
+
+    def __aiter__(self) -> FakeStreamIterator:
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._index >= len(self._chunks):
+            raise StopAsyncIteration
+        chunk = self._chunks[self._index]
+        self._index += 1
+        return chunk
+
+
 @dataclass
 class FakeModels:
     response: FakeGenerateContentResponse | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    stream_chunks: list[Any] = field(default_factory=list)
+    stream_calls: list[dict[str, Any]] = field(default_factory=list)
 
     async def generate_content(
         self,
@@ -124,8 +148,29 @@ class FakeModels:
             raise AssertionError("FakeModels.generate_content called without a queued response")
         return self.response
 
+    async def generate_content_stream(
+        self,
+        *,
+        model: str,
+        contents: Any,
+        config: Any = None,
+        **kwargs: Any,
+    ) -> FakeStreamIterator:
+        self.stream_calls.append(
+            {
+                "model": model,
+                "contents": contents,
+                "config": config,
+                "kwargs": kwargs,
+            }
+        )
+        return FakeStreamIterator(list(self.stream_chunks))
+
     def queue(self, response: FakeGenerateContentResponse) -> None:
         self.response = response
+
+    def queue_stream(self, *chunks: Any) -> None:
+        self.stream_chunks = list(chunks)
 
 
 @dataclass
@@ -862,3 +907,194 @@ async def test_create_tool_result_blocks_only_text(provider, fake_client):
     assert fr.name == "echo"
     assert fr.response == {"output": "just text from blocks"}
     assert not (fr.parts or [])
+
+
+@pytest.mark.asyncio
+async def test_stream_off_by_default_uses_generate_content(provider, fake_client):
+    fake_client.aio.models.queue(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(content=FakeContent(role="model", parts=[FakePart.from_text("ok")]))
+            ],
+        )
+    )
+    await provider.create(messages=[Message(role="user", content="hi")], model="gemini-2.5-flash")
+    assert fake_client.aio.models.calls
+    assert not fake_client.aio.models.stream_calls
+
+
+@pytest.mark.asyncio
+async def test_stream_accumulates_text_across_chunks(fake_client):
+    from coreouto.providers.google import GoogleProvider
+
+    provider = GoogleProvider(client=fake_client, stream=True)
+    fake_client.aio.models.queue_stream(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(role="model", parts=[FakePart.from_text("Hello ")])
+                )
+            ],
+        ),
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(role="model", parts=[FakePart.from_text("world")]),
+                    finish_reason="STOP",
+                )
+            ],
+            usage_metadata=FakeUsageMetadata(
+                prompt_token_count=5, candidates_token_count=3, total_token_count=8
+            ),
+        ),
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="hi")], model="gemini-2.5-flash"
+    )
+
+    assert fake_client.aio.models.stream_calls
+    assert not fake_client.aio.models.calls
+    assert result.content == "Hello world"
+    assert result.usage.total_tokens == 8
+    assert result.stop_reason == "STOP"
+
+
+@pytest.mark.asyncio
+async def test_stream_accumulates_function_call(fake_client):
+    from coreouto.providers.google import GoogleProvider
+
+    provider = GoogleProvider(client=fake_client, stream=True)
+    fake_client.aio.models.queue_stream(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(
+                        role="model",
+                        parts=[FakePart.from_function_call("get_weather", {"location": "SF"})],
+                    ),
+                    finish_reason="STOP",
+                )
+            ],
+            usage_metadata=FakeUsageMetadata(
+                prompt_token_count=10, candidates_token_count=5, total_token_count=15
+            ),
+        ),
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="weather?")], model="gemini-2.5-flash"
+    )
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].name == "get_weather"
+    assert result.tool_calls[0].arguments == {"location": "SF"}
+
+
+@pytest.mark.asyncio
+async def test_stream_per_call_override_enables_streaming(fake_client):
+    from coreouto.providers.google import GoogleProvider
+
+    provider = GoogleProvider(client=fake_client, stream=False)
+    fake_client.aio.models.queue_stream(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(content=FakeContent(role="model", parts=[FakePart.from_text("ok")]))
+            ],
+        ),
+    )
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="gemini-2.5-flash", stream=True
+    )
+    assert fake_client.aio.models.stream_calls
+    assert not fake_client.aio.models.calls
+    assert "stream" not in fake_client.aio.models.stream_calls[0]["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_text_callback(fake_client):
+    from coreouto.providers.google import GoogleProvider
+
+    provider = GoogleProvider(client=fake_client, stream=True)
+    fake_client.aio.models.queue_stream(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(role="model", parts=[FakePart.from_text("Hello ")]),
+                )
+            ],
+        ),
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(role="model", parts=[FakePart.from_text("world")]),
+                    finish_reason="STOP",
+                )
+            ],
+        ),
+    )
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")],
+        model="gemini-2.5-flash",
+        _on_stream_text=cb,
+    )
+    assert received == ["Hello ", "world"]
+
+
+@pytest.mark.asyncio
+async def test_create_extracts_thought_parts(provider, fake_client):
+    fake_client.aio.models.queue(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(
+                        role="model",
+                        parts=[
+                            FakePart.from_thought("Internal reasoning."),
+                            FakePart.from_text("Final answer."),
+                        ],
+                    )
+                )
+            ],
+            usage_metadata=FakeUsageMetadata(
+                prompt_token_count=5, candidates_token_count=3, total_token_count=8
+            ),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="hi")], model="gemini-2.5-flash"
+    )
+    assert result.content == "Final answer."
+    assert result.thinking == "Internal reasoning."
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_thinking_callback(fake_client):
+    from coreouto.providers.google import GoogleProvider
+
+    provider = GoogleProvider(client=fake_client, stream=True)
+    fake_client.aio.models.queue_stream(
+        FakeGenerateContentResponse(
+            candidates=[
+                FakeCandidate(
+                    content=FakeContent(
+                        role="model", parts=[FakePart.from_thought("Thinking hard...")]
+                    ),
+                )
+            ],
+        ),
+    )
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")],
+        model="gemini-2.5-flash",
+        _on_stream_thinking=cb,
+    )
+    assert received == ["Thinking hard..."]

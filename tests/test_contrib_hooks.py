@@ -9,6 +9,8 @@ from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
     ON_ITERATION,
+    ON_STREAM_TEXT,
+    ON_STREAM_THINKING,
     clear_hooks,
     register_hook,
     trigger,
@@ -330,3 +332,25 @@ def test_tool_usage_collection_hook_factory_returns_sink() -> None:
     external: list[tuple[str, str, bool]] = []
     _, returned = tool_usage_collection_hook(sink=external)
     assert returned is external
+
+
+def test_stream_printer_hook_prints_deltas(capsys: pytest.CaptureSelector) -> None:
+    from coreouto.contrib.hooks import stream_printer_hook
+
+    hook = stream_printer_hook()
+    register_hook(ON_STREAM_TEXT, hook)
+    asyncio_run(trigger(ON_STREAM_TEXT, text="Hello "))
+    asyncio_run(trigger(ON_STREAM_TEXT, text="world"))
+    captured = capsys.readouterr()
+    assert captured.out == "Hello world"
+
+
+def test_thinking_printer_hook_prints_deltas(capsys: pytest.CaptureSelector) -> None:
+    from coreouto.contrib.hooks import thinking_printer_hook
+
+    hook = thinking_printer_hook()
+    register_hook(ON_STREAM_THINKING, hook)
+    asyncio_run(trigger(ON_STREAM_THINKING, text="Reasoning "))
+    asyncio_run(trigger(ON_STREAM_THINKING, text="step"))
+    captured = capsys.readouterr()
+    assert captured.out == "Reasoning step"

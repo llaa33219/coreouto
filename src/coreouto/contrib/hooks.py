@@ -88,9 +88,25 @@ def tool_usage_collection_hook(
     return hook, sink
 
 
+def thinking_printer_hook(*, end: str = "", flush: bool = True) -> Callable[..., None]:
+    def hook(*, text: str, **_kwargs: Any) -> None:
+        print(text, end=end, flush=flush)
+
+    return hook
+
+
+def stream_printer_hook(*, end: str = "", flush: bool = True) -> Callable[..., None]:
+    def hook(*, text: str, **_kwargs: Any) -> None:
+        print(text, end=end, flush=flush)
+
+    return hook
+
+
 __all__ = [
     "auto_summarize_hook",
     "iteration_notification_hook",
+    "stream_printer_hook",
+    "thinking_printer_hook",
     "token_collection_hook",
     "token_limit_warning_hook",
     "tool_usage_collection_hook",

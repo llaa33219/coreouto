@@ -36,12 +36,18 @@ class AnthropicProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         client: Any | None = None,
+        stream: bool = False,
     ) -> None:
         if client is not None:
             self._client = client
         else:
             client_cls = _import_anthropic()
             self._client = client_cls(api_key=api_key, base_url=base_url)
+        # Stream over the wire, reassemble into the same `Message` shape.
+        # Works around the SDK's pre-flight ValueError for high max_tokens
+        # ("Streaming is required for operations that may take longer than
+        # 10 minutes"). Result is identical to the non-streaming path.
+        self._stream = stream
 
     async def create(
         self,
@@ -134,23 +140,44 @@ class AnthropicProvider:
             for tool in (tools or [])
         ]
 
-        resp = await self._client.messages.create(
+        max_tokens = kwargs.pop("max_tokens", 1024)
+        use_stream = kwargs.pop("stream", self._stream)
+        on_stream_text = kwargs.pop("_on_stream_text", None)
+        on_stream_thinking = kwargs.pop("_on_stream_thinking", None)
+
+        request_kwargs = dict(
             model=model,
             system=system_str,
             messages=anthropic_messages,
             tools=anthropic_tools if anthropic_tools else None,
-            max_tokens=kwargs.pop("max_tokens", 1024),
+            max_tokens=max_tokens,
             **kwargs,
         )
 
+        if use_stream:
+            async with self._client.messages.stream(**request_kwargs) as manager:
+                if on_stream_text is not None or on_stream_thinking is not None:
+                    async for event in manager:
+                        if event.type == "content_block_delta":
+                            if event.delta.type == "text_delta" and on_stream_text is not None:
+                                await on_stream_text(event.delta.text)
+                            elif (
+                                event.delta.type == "thinking_delta"
+                                and on_stream_thinking is not None
+                            ):
+                                await on_stream_thinking(event.delta.thinking)
+                resp = await manager.get_final_message()
+        else:
+            resp = await self._client.messages.create(**request_kwargs)
+
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
-        # Anthropic can return `resp.content is None` when the response contains
-        # only `thinking` blocks (extended thinking) or when an empty response
-        # is returned. Iterate defensively.
         for block in resp.content or []:
             if block.type == "text":
                 text_parts.append(block.text or "")
+            elif block.type == "thinking":
+                thinking_parts.append(block.thinking or "")
             elif block.type == "tool_use":
                 tool_calls.append(
                     ToolCall(
@@ -159,8 +186,6 @@ class AnthropicProvider:
                         arguments=dict(block.input) if block.input else {},
                     )
                 )
-            # `thinking` blocks (extended thinking) are deliberately skipped:
-            # they hold the model's internal reasoning, not user-facing text.
 
         usage = Usage(
             prompt_tokens=resp.usage.input_tokens,
@@ -173,6 +198,7 @@ class AnthropicProvider:
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=getattr(resp, "stop_reason", None),
+            thinking="".join(thinking_parts) if thinking_parts else None,
             raw=resp,
         )
 

@@ -179,6 +179,7 @@ class LLMResponse(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage | None = None
     stop_reason: str | None = None
+    thinking: str | None = None
     raw: Any | None = None
 
 

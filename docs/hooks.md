@@ -2,12 +2,15 @@
 
 Hooks let you inject behavior at specific points in the agent loop without modifying the core. Register a function for an event and it fires every time that event occurs.
 
-## The eight events
+## The eleven events
 
 | Event              | When it fires                        | Keyword arguments                                      |
 |--------------------|--------------------------------------|--------------------------------------------------------|
 | `before_llm_call`  | Before each LLM request              | `messages`, `model`, `tools`                           |
 | `after_llm_call`   | After each LLM response              | `response`, `messages`                                 |
+| `on_stream_text`   | For each text fragment during streaming | `text`, `messages`, `model`                         |
+| `on_stream_thinking` | For each reasoning fragment during streaming | `text`, `messages`, `model`                     |
+| `on_thinking`      | After each LLM call that produced reasoning | `thinking`, `messages`, `model`                 |
 | `before_tool_call` | Before each tool executes            | `name`, `arguments`                                    |
 | `after_tool_call`  | After each tool result               | `name`, `result`                                       |
 | `on_iteration`     | At the end of each loop iteration    | `iteration`, `messages`, `response`                    |
@@ -29,6 +32,40 @@ def log_retry(*, attempt, interval, error, **kwargs):
 
 co.register_hook(co.ON_RETRY, log_retry)
 ```
+
+### The on_stream_text event
+
+Fires for each text fragment the model emits **during a streaming LLM call** (only when the provider's `stream=True`). The `text` kwarg is the incremental string fragment (not the full text so far). This is useful for real-time UI updates like a typing effect. Only fires on providers that support streaming — see [Providers — Streaming transport](providers.md#streaming-transport).
+
+```python
+from coreouto.contrib.hooks import stream_printer_hook
+
+co.register_hook(co.ON_STREAM_TEXT, stream_printer_hook())
+```
+
+### The on_stream_thinking event
+
+Fires for each reasoning/thinking fragment during a streaming call (only when `stream=True` and the model produces reasoning). The `text` kwarg is the incremental reasoning fragment. Useful for displaying the model's thought process in real time:
+
+```python
+import sys
+from coreouto.contrib.hooks import thinking_printer_hook
+
+co.register_hook(co.ON_STREAM_THINKING, thinking_printer_hook())
+```
+
+### The on_thinking event
+
+Fires after each LLM call when the model produced reasoning/thinking content (non-streaming and streaming alike). The `thinking` kwarg is the complete reasoning text for that turn. Fires only when `response.thinking` is non-empty — providers that don't produce reasoning never trigger it.
+
+```python
+def log_thinking(*, thinking, model, **kwargs):
+    print(f"[{model} reasoning] {thinking[:100]}...")
+
+co.register_hook(co.ON_THINKING, log_thinking)
+```
+
+Reasoning is also available on `response.thinking` in the `after_llm_call` hook and on the final `Response`.
 
 ## Registering a hook
 
@@ -75,7 +112,7 @@ co.clear_hooks()                    # clear all events
 
 ## Contrib hooks
 
-`coreouto.contrib.hooks` ships five ready-made hook factories. They're opt-in: import and register the ones you need.
+`coreouto.contrib.hooks` ships seven ready-made hook factories. They're opt-in: import and register the ones you need.
 
 ### Token collection
 
@@ -156,6 +193,26 @@ co.register_hook("after_tool_call", hook)
 
 Each entry is a tuple of `(tool_name, result_content, is_error)`.
 
+### Stream printer
+
+Prints each text fragment to the terminal as it arrives during a streaming call:
+
+```python
+from coreouto.contrib.hooks import stream_printer_hook
+
+co.register_hook("on_stream_text", stream_printer_hook())
+```
+
+### Thinking printer
+
+Prints each reasoning fragment to the terminal as it arrives during a streaming call:
+
+```python
+from coreouto.contrib.hooks import thinking_printer_hook
+
+co.register_hook("on_stream_thinking", thinking_printer_hook())
+```
+
 ## Writing your own hooks
 
 A hook is any callable that accepts the event's keyword arguments (plus `**kwargs` for safety):
@@ -205,6 +262,9 @@ The event name strings are also exported as constants for convenience:
 ```python
 co.BEFORE_LLM_CALL   # "before_llm_call"
 co.AFTER_LLM_CALL    # "after_llm_call"
+co.ON_STREAM_TEXT    # "on_stream_text"
+co.ON_STREAM_THINKING  # "on_stream_thinking"
+co.ON_THINKING       # "on_thinking"
 co.BEFORE_TOOL_CALL  # "before_tool_call"
 co.AFTER_TOOL_CALL   # "after_tool_call"
 co.ON_ITERATION      # "on_iteration"

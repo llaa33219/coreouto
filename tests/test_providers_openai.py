@@ -18,14 +18,39 @@ from coreouto.providers import openai as openai_provider
 from coreouto.tools import Tool
 
 
+class FakeChatStreamManager:
+    def __init__(self, completion: Any, events: list[Any] | None = None) -> None:
+        self._completion = completion
+        self._events = events or []
+
+    async def __aenter__(self) -> FakeChatStreamManager:
+        return self
+
+    async def __aiter__(self) -> Any:
+        for event in self._events:
+            yield event
+
+    async def get_final_completion(self) -> Any:
+        return self._completion
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
+
+
 class FakeCompletions:
     def __init__(self, response: Any) -> None:
         self.response = response
         self.calls: list[dict[str, Any]] = []
+        self.stream_calls: list[dict[str, Any]] = []
+        self.stream_events: list[Any] = []
 
     async def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
         return self.response
+
+    def stream(self, **kwargs: Any) -> FakeChatStreamManager:
+        self.stream_calls.append(kwargs)
+        return FakeChatStreamManager(self.response, self.stream_events)
 
 
 class FakeAsyncOpenAI:
@@ -276,3 +301,109 @@ def test_import_error_when_openai_missing(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(openai_provider, "AsyncOpenAI", None)
     with pytest.raises(ImportError, match="pip install coreouto\\[openai\\]"):
         openai_provider.OpenAIProvider(api_key="fake")
+
+
+@pytest.mark.asyncio
+async def test_stream_off_by_default_uses_create() -> None:
+    fake = FakeAsyncOpenAI(
+        _text_response("ok", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+    )
+    provider = openai_provider.OpenAIProvider(client=fake)
+    await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4")
+    assert fake.chat.completions.calls
+    assert not fake.chat.completions.stream_calls
+
+
+@pytest.mark.asyncio
+async def test_stream_true_routes_to_streaming_path() -> None:
+    fake = FakeAsyncOpenAI(
+        _text_response("streamed", {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5})
+    )
+    provider = openai_provider.OpenAIProvider(client=fake, stream=True)
+    result = await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4")
+    assert fake.chat.completions.stream_calls
+    assert not fake.chat.completions.calls
+    assert result.content == "streamed"
+    assert result.usage == Usage(prompt_tokens=3, completion_tokens=2, total_tokens=5)
+
+
+@pytest.mark.asyncio
+async def test_stream_per_call_override_enables_streaming() -> None:
+    fake = FakeAsyncOpenAI(
+        _text_response("ok", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+    )
+    provider = openai_provider.OpenAIProvider(client=fake, stream=False)
+    await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4", stream=True)
+    assert fake.chat.completions.stream_calls
+    assert not fake.chat.completions.calls
+    assert "stream" not in fake.chat.completions.stream_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_text_callback() -> None:
+    fake = FakeAsyncOpenAI(
+        _text_response("ok", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+    )
+    fake.chat.completions.stream_events = [
+        types.SimpleNamespace(type="content.delta", delta="Hello "),
+        types.SimpleNamespace(type="content.delta", delta="world"),
+    ]
+    provider = openai_provider.OpenAIProvider(client=fake, stream=True)
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="gpt-4", _on_stream_text=cb
+    )
+    assert received == ["Hello ", "world"]
+
+
+@pytest.mark.asyncio
+async def test_create_extracts_reasoning_content() -> None:
+    response = types.SimpleNamespace(
+        choices=[
+            types.SimpleNamespace(
+                message=types.SimpleNamespace(
+                    content="ok",
+                    tool_calls=None,
+                    reasoning_content="Deep reasoning here.",
+                )
+            )
+        ],
+        usage=None,
+    )
+    fake = FakeAsyncOpenAI(response)
+    provider = openai_provider.OpenAIProvider(client=fake)
+    result = await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4")
+    assert result.thinking == "Deep reasoning here."
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_thinking_callback() -> None:
+    fake = FakeAsyncOpenAI(
+        _text_response("ok", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2})
+    )
+    fake.chat.completions.stream_events = [
+        types.SimpleNamespace(
+            type="chunk",
+            chunk=types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        delta=types.SimpleNamespace(content=None, reasoning_content="Thinking...")
+                    )
+                ]
+            ),
+        ),
+    ]
+    provider = openai_provider.OpenAIProvider(client=fake, stream=True)
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="gpt-4", _on_stream_thinking=cb
+    )
+    assert received == ["Thinking..."]

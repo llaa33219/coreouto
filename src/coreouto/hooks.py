@@ -12,6 +12,9 @@ ON_ITERATION = "on_iteration"
 ON_FINISH = "on_finish"
 ON_USER_INJECTION = "on_user_injection"
 ON_RETRY = "on_retry"
+ON_STREAM_TEXT = "on_stream_text"
+ON_STREAM_THINKING = "on_stream_thinking"
+ON_THINKING = "on_thinking"
 
 _HOOKS: dict[str, list[Callable[..., Any]]] = {}
 

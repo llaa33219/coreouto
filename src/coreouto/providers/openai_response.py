@@ -41,6 +41,7 @@ class OpenAIResponseProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         client: Any | None = None,
+        stream: bool = False,
     ) -> None:
         if client is not None:
             self._client = client
@@ -50,6 +51,7 @@ class OpenAIResponseProvider:
             self._client = None
             self._api_key = api_key
             self._base_url = base_url
+        self._stream = stream
 
     def _get_client(self) -> Any:
         if self._client is not None:
@@ -170,7 +172,10 @@ class OpenAIResponseProvider:
             ]
 
         client = self._get_client()
-        resp = await client.responses.create(
+        use_stream = kwargs.pop("stream", self._stream)
+        on_stream_text = kwargs.pop("_on_stream_text", None)
+        on_stream_thinking = kwargs.pop("_on_stream_thinking", None)
+        request_kwargs = dict(
             model=model,
             instructions=system_str,
             input=responses_input,
@@ -178,13 +183,37 @@ class OpenAIResponseProvider:
             **kwargs,
         )
 
+        if use_stream:
+            async with client.responses.stream(**request_kwargs) as s:
+                if on_stream_text is not None or on_stream_thinking is not None:
+                    async for event in s:
+                        if (
+                            event.type == "response.output_text.delta"
+                            and on_stream_text is not None
+                        ):
+                            await on_stream_text(event.delta)
+                        elif (
+                            event.type == "response.reasoning_summary_text.delta"
+                            and on_stream_thinking is not None
+                        ):
+                            await on_stream_thinking(event.delta)
+                resp = await s.get_final_response()
+        else:
+            resp = await client.responses.create(**request_kwargs)
+
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         for item in resp.output:
             if getattr(item, "type", None) == "message":
                 for part in getattr(item, "content", []) or []:
                     if getattr(part, "type", None) == "output_text":
                         text_parts.append(getattr(part, "text", "") or "")
+            elif getattr(item, "type", None) == "reasoning":
+                for summary in getattr(item, "summary", []) or []:
+                    text = getattr(summary, "text", None)
+                    if text:
+                        thinking_parts.append(text)
             elif getattr(item, "type", None) == "function_call":
                 tool_calls.append(
                     ToolCall(
@@ -217,6 +246,7 @@ class OpenAIResponseProvider:
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=stop_reason,
+            thinking="".join(thinking_parts) if thinking_parts else None,
             raw=resp,
         )
 

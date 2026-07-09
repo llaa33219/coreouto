@@ -188,6 +188,44 @@ co.register_provider("moonshot", OpenAIProvider(
 ))
 ```
 
+## Streaming transport
+
+All four built-in providers accept a `stream` constructor flag (default `False`). When enabled, requests are sent over the streaming transport (SSE) and reassembled into the same response object the non-streaming path returns — the `LLMResponse` is identical either way.
+
+**Why use it.** The Anthropic SDK raises a client-side `ValueError` ("Streaming is required for operations that may take longer than 10 minutes") for non-streaming calls with high `max_tokens`. Enabling `stream=True` bypasses this entirely. OpenAI and Google have no such limit, but the flag is available uniformly for consistency and for endpoints that benefit from streaming (long generations, unstable connections).
+
+```python
+co.providers.anthropic.register(api_key="sk-ant-...", name="anthropic-long")
+co.register_provider("anthropic-long-stream", co.providers.anthropic.AnthropicProvider(
+    api_key="sk-ant-...", stream=True,
+))
+```
+
+All four providers support it identically:
+
+```python
+from coreouto.providers.openai import OpenAIProvider
+from coreouto.providers.openai_response import OpenAIResponseProvider
+from coreouto.providers.anthropic import AnthropicProvider
+from coreouto.providers.google import GoogleProvider
+
+OpenAIProvider(api_key="...", stream=True)
+OpenAIResponseProvider(api_key="...", stream=True)
+AnthropicProvider(api_key="...", stream=True)
+GoogleProvider(api_key="...", stream=True)
+```
+
+**Per-call override.** Set `stream` per call via `provider_passthrough` (it overrides the constructor default and is consumed by coreouto — it never reaches the SDK):
+
+```python
+co.register_agent_preset(
+    "thinker", model="claude-opus-4-8", provider="anthropic",
+    provider_passthrough={"stream": True},
+)
+```
+
+`stream` is a transport-level setting, so it is constructor-only (like `base_url`); it is not part of the normalized `provider_config` keys.
+
 ## Registering a provider
 
 `register_provider` takes a string key and a provider instance:

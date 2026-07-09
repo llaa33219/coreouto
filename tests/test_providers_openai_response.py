@@ -45,6 +45,7 @@ class FakeResponseItem:
     name: str | None = None
     arguments: str | None = None
     text: str | None = None
+    summary: list[Any] = field(default_factory=list)
 
 
 @dataclass
@@ -53,11 +54,32 @@ class FakeResponse:
     usage: FakeUsage
 
 
+class FakeResponseStreamManager:
+    def __init__(self, response: FakeResponse, events: list[Any] | None = None) -> None:
+        self._response = response
+        self._events = events or []
+
+    async def __aenter__(self) -> FakeResponseStreamManager:
+        return self
+
+    async def __aiter__(self) -> Any:
+        for event in self._events:
+            yield event
+
+    async def get_final_response(self) -> FakeResponse:
+        return self._response
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
+
+
 class FakeResponsesClient:
     def __init__(self, responses: list[FakeResponse] | None = None) -> None:
         self._responses = list(responses or [])
         self._index = 0
         self.calls: list[dict[str, Any]] = []
+        self.stream_calls: list[dict[str, Any]] = []
+        self.stream_events: list[Any] = []
 
     async def create(
         self,
@@ -82,6 +104,30 @@ class FakeResponsesClient:
         resp = self._responses[self._index]
         self._index += 1
         return resp
+
+    def stream(
+        self,
+        *,
+        model: str,
+        instructions: str | None = None,
+        input: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        **kwargs: Any,
+    ) -> FakeResponseStreamManager:
+        self.stream_calls.append(
+            {
+                "model": model,
+                "instructions": instructions,
+                "input": input,
+                "tools": tools,
+                "kwargs": kwargs,
+            }
+        )
+        if self._index >= len(self._responses):
+            raise AssertionError("FakeResponsesClient exhausted")
+        resp = self._responses[self._index]
+        self._index += 1
+        return FakeResponseStreamManager(resp, self.stream_events)
 
 
 class FakeAsyncOpenAI:
@@ -690,3 +736,147 @@ async def test_create_parses_typed_response_output_text(
     result = await provider.create(messages=[Message(role="user", content="what?")], model="gpt-4o")
 
     assert result.content == "the answer is 42 and also pi"
+
+
+@pytest.mark.asyncio
+async def test_stream_off_by_default_uses_create(fake_client):
+    provider = OpenAIResponseProvider(client=fake_client)
+    fake_client.responses._responses = [
+        FakeResponse(
+            output=[
+                FakeResponseItem(
+                    type="message", role="assistant", content=[FakeOutputText(text="ok")]
+                )
+            ],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    ]
+    await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4o")
+    assert fake_client.responses.calls
+    assert not fake_client.responses.stream_calls
+
+
+@pytest.mark.asyncio
+async def test_stream_true_routes_to_streaming_path(fake_client):
+    provider = OpenAIResponseProvider(client=fake_client, stream=True)
+    fake_client.responses._responses = [
+        FakeResponse(
+            output=[
+                FakeResponseItem(
+                    type="message", role="assistant", content=[FakeOutputText(text="streamed")]
+                )
+            ],
+            usage=FakeUsage(input_tokens=2, output_tokens=3),
+        )
+    ]
+    result = await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4o")
+    assert fake_client.responses.stream_calls
+    assert not fake_client.responses.calls
+    assert result.content == "streamed"
+    assert result.usage.prompt_tokens == 2
+    assert result.usage.completion_tokens == 3
+
+
+@pytest.mark.asyncio
+async def test_stream_per_call_override_enables_streaming(fake_client):
+    provider = OpenAIResponseProvider(client=fake_client, stream=False)
+    fake_client.responses._responses = [
+        FakeResponse(
+            output=[
+                FakeResponseItem(
+                    type="message", role="assistant", content=[FakeOutputText(text="ok")]
+                )
+            ],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    ]
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="gpt-4o", stream=True
+    )
+    assert fake_client.responses.stream_calls
+    assert not fake_client.responses.calls
+    assert "stream" not in fake_client.responses.stream_calls[0]["kwargs"]
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_text_callback(fake_client):
+    import types as pytypes
+
+    provider = OpenAIResponseProvider(client=fake_client, stream=True)
+    fake_client.responses._responses = [
+        FakeResponse(
+            output=[
+                FakeResponseItem(
+                    type="message", role="assistant", content=[FakeOutputText(text="ok")]
+                )
+            ],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    ]
+    fake_client.responses.stream_events = [
+        pytypes.SimpleNamespace(type="response.output_text.delta", delta="Hello "),
+        pytypes.SimpleNamespace(type="response.output_text.delta", delta="world"),
+    ]
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="gpt-4o", _on_stream_text=cb
+    )
+    assert received == ["Hello ", "world"]
+
+
+@pytest.mark.asyncio
+async def test_create_extracts_reasoning_summary(fake_client):
+    provider = OpenAIResponseProvider(client=fake_client)
+    fake_client.responses._responses = [
+        FakeResponse(
+            output=[
+                FakeResponseItem(
+                    type="reasoning",
+                    summary=[FakeResponseItem(type="summary_text", text="Step 1: analyze.")],
+                ),
+                FakeResponseItem(
+                    type="message",
+                    role="assistant",
+                    content=[FakeOutputText(text="The answer.")],
+                ),
+            ],
+            usage=FakeUsage(input_tokens=5, output_tokens=3),
+        )
+    ]
+    result = await provider.create(messages=[Message(role="user", content="hi")], model="gpt-4o")
+    assert result.thinking is not None
+    assert "analyze" in result.thinking
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_thinking_callback(fake_client):
+    import types as pytypes
+
+    provider = OpenAIResponseProvider(client=fake_client, stream=True)
+    fake_client.responses._responses = [
+        FakeResponse(
+            output=[
+                FakeResponseItem(
+                    type="message", role="assistant", content=[FakeOutputText(text="ok")]
+                )
+            ],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    ]
+    fake_client.responses.stream_events = [
+        pytypes.SimpleNamespace(type="response.reasoning_summary_text.delta", delta="Reasoning "),
+        pytypes.SimpleNamespace(type="response.reasoning_summary_text.delta", delta="done"),
+    ]
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="gpt-4o", _on_stream_thinking=cb
+    )
+    assert received == ["Reasoning ", "done"]

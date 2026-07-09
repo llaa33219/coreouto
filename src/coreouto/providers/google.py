@@ -54,6 +54,7 @@ class GoogleProvider:
         api_key: str | None = None,
         client: Any | None = None,
         http_options: dict | None = None,
+        stream: bool = False,
     ) -> None:
         if client is not None:
             self._client = client
@@ -65,6 +66,7 @@ class GoogleProvider:
                 kwargs["http_options"] = http_options
             self._client = genai.Client(**kwargs)
         self._aio = self._client.aio
+        self._stream = stream
 
     async def create(
         self,
@@ -167,15 +169,25 @@ class GoogleProvider:
             call_kwargs["config"] = config
         call_kwargs.update(kwargs)
 
-        response = await self._aio.models.generate_content(**call_kwargs)
+        use_stream = call_kwargs.pop("stream", self._stream)
+        on_stream_text = call_kwargs.pop("_on_stream_text", None)
+        on_stream_thinking = call_kwargs.pop("_on_stream_thinking", None)
+        if use_stream:
+            response = await self._collect_stream(call_kwargs, on_stream_text, on_stream_thinking)
+        else:
+            response = await self._aio.models.generate_content(**call_kwargs)
 
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         if getattr(response, "candidates", None):
             candidate = response.candidates[0]
             for part in getattr(candidate.content, "parts", []) or []:
                 if getattr(part, "text", None):
-                    text_parts.append(part.text)
+                    if getattr(part, "thought", False):
+                        thinking_parts.append(part.text)
+                    else:
+                        text_parts.append(part.text)
                 fc = getattr(part, "function_call", None)
                 if fc is not None:
                     call_id = getattr(fc, "id", None) or self._gen_call_id()
@@ -214,13 +226,15 @@ class GoogleProvider:
         stop_reason = None
         if getattr(response, "candidates", None):
             stop_reason = getattr(response.candidates[0], "finish_reason", None)
-        stop_reason = str(stop_reason) if stop_reason is not None else None
+        if stop_reason is not None:
+            stop_reason = getattr(stop_reason, "name", stop_reason)
 
         return LLMResponse(
             content="".join(text_parts) if text_parts else None,
             tool_calls=tool_calls,
             usage=usage,
             stop_reason=stop_reason,
+            thinking="".join(thinking_parts) if thinking_parts else None,
             raw=response,
         )
 
@@ -255,6 +269,46 @@ class GoogleProvider:
     @staticmethod
     def _gen_call_id() -> str:
         return f"call_{uuid.uuid4().hex[:24]}"
+
+    async def _collect_stream(
+        self,
+        call_kwargs: dict[str, Any],
+        on_stream_text: Any = None,
+        on_stream_thinking: Any = None,
+    ) -> Any:
+        stream = await self._aio.models.generate_content_stream(**call_kwargs)
+        accumulated_parts: list[Any] = []
+        last_usage: Any = None
+        last_finish_reason: Any = None
+        async for chunk in stream:
+            candidates = getattr(chunk, "candidates", None)
+            if candidates:
+                cand = candidates[0]
+                content = getattr(cand, "content", None)
+                if content is not None and getattr(content, "parts", None):
+                    for part in content.parts:
+                        text = getattr(part, "text", None)
+                        if text:
+                            if getattr(part, "thought", False):
+                                if on_stream_thinking is not None:
+                                    await on_stream_thinking(text)
+                            elif on_stream_text is not None:
+                                await on_stream_text(text)
+                    accumulated_parts.extend(content.parts)
+                if getattr(cand, "finish_reason", None) is not None:
+                    last_finish_reason = cand.finish_reason
+            if getattr(chunk, "usage_metadata", None) is not None:
+                last_usage = chunk.usage_metadata
+        return types.GenerateContentResponse(
+            candidates=[
+                types.Candidate(
+                    content=types.Content(role="model", parts=accumulated_parts),
+                    finish_reason=last_finish_reason,
+                    index=0,
+                )
+            ],
+            usage_metadata=last_usage,
+        )
 
     @staticmethod
     def _content_block_to_part(block: Any) -> Any:

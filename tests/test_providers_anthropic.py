@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import types
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -26,6 +27,7 @@ from coreouto.tools import Tool
 class FakeContentBlock:
     type: str
     text: str | None = None
+    thinking: str | None = None
     id: str | None = None
     name: str | None = None
     input: dict[str, Any] = field(default_factory=dict)
@@ -47,6 +49,9 @@ class FakeMessage:
 class FakeMessages:
     _response: FakeMessage | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
+    stream_calls: list[dict[str, Any]] = field(default_factory=list)
+    stream_text_deltas: list[str] = field(default_factory=list)
+    stream_thinking_deltas: list[str] = field(default_factory=list)
 
     async def create(
         self,
@@ -72,8 +77,51 @@ class FakeMessages:
             raise AssertionError("FakeMessages.create called without a queued response")
         return self._response
 
+    def stream(self, **kwargs: Any) -> FakeMessageStream:
+        self.stream_calls.append(kwargs)
+        return FakeMessageStream(
+            self._response, self.stream_text_deltas, self.stream_thinking_deltas
+        )
+
     def queue(self, response: FakeMessage) -> None:
         self._response = response
+
+
+class FakeMessageStream:
+    """Async context manager mimicking Anthropic's AsyncMessageStream."""
+
+    def __init__(
+        self,
+        message: FakeMessage | None,
+        text_deltas: list[str] | None = None,
+        thinking_deltas: list[str] | None = None,
+    ) -> None:
+        self._message = message
+        self._text_deltas = text_deltas or []
+        self._thinking_deltas = thinking_deltas or []
+
+    async def __aenter__(self) -> FakeMessageStream:
+        return self
+
+    async def __aiter__(self) -> Any:
+        for text in self._text_deltas:
+            yield types.SimpleNamespace(
+                type="content_block_delta",
+                delta=types.SimpleNamespace(type="text_delta", text=text),
+            )
+        for thinking in self._thinking_deltas:
+            yield types.SimpleNamespace(
+                type="content_block_delta",
+                delta=types.SimpleNamespace(type="thinking_delta", thinking=thinking),
+            )
+
+    async def get_final_message(self) -> FakeMessage:
+        if self._message is None:
+            raise AssertionError("FakeMessageStream entered without a queued response")
+        return self._message
+
+    async def __aexit__(self, *args: Any) -> bool:
+        return False
 
 
 @dataclass
@@ -662,3 +710,144 @@ async def test_create_handles_empty_content(provider, fake_client):
     )
     assert result.content is None
     assert result.tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_stream_off_by_default_uses_create(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(client=fake_client)
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(messages=[Message(role="user", content="hi")], model="m")
+    assert fake_client.messages.calls
+    assert not fake_client.messages.stream_calls
+
+
+@pytest.mark.asyncio
+async def test_stream_true_routes_to_streaming_path(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(client=fake_client, stream=True)
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="streamed")],
+            usage=FakeUsage(input_tokens=2, output_tokens=4),
+        )
+    )
+    result = await provider.create(messages=[Message(role="user", content="hi")], model="m")
+
+    assert fake_client.messages.stream_calls
+    assert not fake_client.messages.calls
+    assert result.content == "streamed"
+    assert result.usage.total_tokens == 6
+    assert result.raw is not None
+
+
+@pytest.mark.asyncio
+async def test_stream_per_call_override_enables_streaming(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(client=fake_client, stream=False)
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="via override")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(messages=[Message(role="user", content="hi")], model="m", stream=True)
+    assert fake_client.messages.stream_calls
+    assert not fake_client.messages.calls
+    assert "stream" not in fake_client.messages.stream_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_stream_preserves_request_kwargs(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(client=fake_client, stream=True)
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    await provider.create(
+        messages=[Message(role="user", content="hi")],
+        model="claude-opus-4-8",
+        max_tokens=4096,
+    )
+    call = fake_client.messages.stream_calls[0]
+    assert call["model"] == "claude-opus-4-8"
+    assert call["max_tokens"] == 4096
+    assert call["messages"] == [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+    assert call["system"] is None
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_text_callback(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(client=fake_client, stream=True)
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="Hello world")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    fake_client.messages.stream_text_deltas = ["Hello ", "world"]
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="m", _on_stream_text=cb
+    )
+    assert received == ["Hello ", "world"]
+
+
+@pytest.mark.asyncio
+async def test_create_extracts_thinking(provider, fake_client):
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[
+                FakeContentBlock(type="thinking", thinking="Let me reason about this."),
+                FakeContentBlock(type="text", text="The answer is 42."),
+            ],
+            usage=FakeUsage(input_tokens=10, output_tokens=20),
+        )
+    )
+    result = await provider.create(
+        messages=[Message(role="user", content="What is the answer?")],
+        model="claude-sonnet-4-6",
+    )
+    assert result.content == "The answer is 42."
+    assert result.thinking == "Let me reason about this."
+
+
+@pytest.mark.asyncio
+async def test_stream_invokes_thinking_callback(fake_client):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    provider = AnthropicProvider(client=fake_client, stream=True)
+    fake_client.messages.queue(
+        FakeMessage(
+            content=[FakeContentBlock(type="text", text="ok")],
+            usage=FakeUsage(input_tokens=1, output_tokens=1),
+        )
+    )
+    fake_client.messages.stream_thinking_deltas = ["Reasoning ", "step by step"]
+    received: list[str] = []
+
+    async def cb(text: str) -> None:
+        received.append(text)
+
+    await provider.create(
+        messages=[Message(role="user", content="hi")], model="m", _on_stream_thinking=cb
+    )
+    assert received == ["Reasoning ", "step by step"]

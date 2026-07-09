@@ -19,6 +19,7 @@ class OpenAIProvider:
         api_key: str | None = None,
         base_url: str | None = None,
         client: AsyncOpenAI | None = None,
+        stream: bool = False,
     ) -> None:
         if client is not None:
             self._client = client
@@ -28,6 +29,7 @@ class OpenAIProvider:
                     "The openai package is required. Install it with: pip install coreouto[openai]"
                 )
             self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._stream = stream
 
     async def create(
         self,
@@ -102,15 +104,35 @@ class OpenAIProvider:
             else None
         )
 
-        resp = await self._client.chat.completions.create(
+        use_stream = kwargs.pop("stream", self._stream)
+        on_stream_text = kwargs.pop("_on_stream_text", None)
+        on_stream_thinking = kwargs.pop("_on_stream_thinking", None)
+        request_kwargs = dict(
             model=model,
             messages=msgs,
             tools=openai_tools if openai_tools else None,
             **kwargs,
         )
 
+        if use_stream:
+            async with self._client.chat.completions.stream(**request_kwargs) as s:
+                if on_stream_text is not None or on_stream_thinking is not None:
+                    async for event in s:
+                        if event.type == "content.delta" and on_stream_text is not None:
+                            await on_stream_text(event.delta)
+                        elif event.type == "chunk" and on_stream_thinking is not None:
+                            choices = getattr(event.chunk, "choices", None) or []
+                            if choices:
+                                reasoning = getattr(choices[0].delta, "reasoning_content", None)
+                                if reasoning:
+                                    await on_stream_thinking(reasoning)
+                resp = await s.get_final_completion()
+        else:
+            resp = await self._client.chat.completions.create(**request_kwargs)
+
         choice = resp.choices[0].message
         content = choice.content
+        thinking = getattr(choice, "reasoning_content", None)
         raw_tool_calls = getattr(choice, "tool_calls", None) or []
         parsed_tool_calls: list[ToolCall] = []
         for tc in raw_tool_calls:
@@ -134,6 +156,7 @@ class OpenAIProvider:
             tool_calls=parsed_tool_calls,
             usage=usage,
             stop_reason=getattr(choice, "finish_reason", None),
+            thinking=thinking,
             raw=resp,
         )
 

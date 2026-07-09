@@ -26,6 +26,9 @@ from coreouto.hooks import (
     ON_FINISH,
     ON_ITERATION,
     ON_RETRY,
+    ON_STREAM_TEXT,
+    ON_STREAM_THINKING,
+    ON_THINKING,
     ON_USER_INJECTION,
     trigger,
 )
@@ -318,6 +321,12 @@ class Agent:
         iterations = 0
         all_usage: list[Usage] = []
 
+        async def _on_stream_text(text: str) -> None:
+            await trigger(ON_STREAM_TEXT, text=text, messages=messages, model=cfg.model)
+
+        async def _on_stream_thinking(text: str) -> None:
+            await trigger(ON_STREAM_THINKING, text=text, messages=messages, model=cfg.model)
+
         while True:
             await asyncio.sleep(0)
             while not self._pending_user_messages.empty():
@@ -346,16 +355,27 @@ class Agent:
 
             normalized = normalize_provider_config(cfg.provider, cfg.provider_config)
             merged = {**normalized, **cfg.provider_passthrough}
+            extra_kwargs = {"system_prompt": None, **merged}
+            if hasattr(provider, "_stream"):
+                extra_kwargs["_on_stream_text"] = _on_stream_text
+                extra_kwargs["_on_stream_thinking"] = _on_stream_thinking
             response = await _create_with_retry(
                 provider,
                 messages=messages,
                 model=cfg.model,
                 tools=effective_tools,
-                extra_kwargs={"system_prompt": None, **merged},
+                extra_kwargs=extra_kwargs,
                 retry_intervals=cfg.retry_intervals,
             )
 
             await trigger(AFTER_LLM_CALL, response=response, messages=messages)
+            if response.thinking:
+                await trigger(
+                    ON_THINKING,
+                    thinking=response.thinking,
+                    messages=messages,
+                    model=cfg.model,
+                )
             if response.usage:
                 all_usage.append(response.usage)
 
