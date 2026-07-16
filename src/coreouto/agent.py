@@ -8,6 +8,7 @@ from coreouto._types import (
     AgentConfig,
     AudioBlock,
     DocumentBlock,
+    ErrorRule,
     ImageBlock,
     Message,
     Response,
@@ -25,7 +26,7 @@ from coreouto.hooks import (
     BEFORE_TOOL_CALL,
     ON_FINISH,
     ON_ITERATION,
-    ON_RETRY,
+    ON_PROVIDER_ERROR,
     ON_STREAM_TEXT,
     ON_STREAM_THINKING,
     ON_THINKING,
@@ -183,61 +184,19 @@ def _invoke_sync_handler(handler: Any, arguments: dict[str, Any]) -> Any:
     return handler(**arguments)
 
 
-async def _create_with_retry(
-    provider: Any,
-    *,
-    messages: list[Message],
-    model: str,
-    tools: list[Tool],
-    extra_kwargs: dict[str, Any],
-    retry_intervals: list[float] | None,
-) -> Any:
-    """Call ``provider.create`` with optional retry on exception.
-
-    ``retry_intervals`` is the list of seconds to wait before each retry.
-    ``None`` or an empty list means no retry — the first exception propagates
-    immediately (current behavior). Each entry drives one retry attempt:
-    after a failed initial call, the loop sleeps ``intervals[0]`` and retries,
-    on failure sleeps ``intervals[1]`` and retries, and so on. When every
-    interval is exhausted the last exception is re-raised.
-
-    Any ``Exception`` raised by ``provider.create`` triggers a retry. This
-    covers network, timeout, rate-limit, and server errors uniformly across
-    providers without coreouto having to import provider-specific exception
-    types. A programmer error (bad kwargs) will simply fail again on each
-    retry and surface after the intervals are spent.
-
-    Fires ``ON_RETRY`` before each sleep with ``{attempt, interval, error,
-    messages, model}`` so callers can log or observe retries. The existing
-    ``BEFORE_LLM_CALL`` / ``AFTER_LLM_CALL`` hooks bracket the logical
-    per-iteration LLM call and fire once per iteration regardless of retries.
-    """
-    if not retry_intervals:
-        return await provider.create(messages=messages, model=model, tools=tools, **extra_kwargs)
-
-    try:
-        return await provider.create(messages=messages, model=model, tools=tools, **extra_kwargs)
-    except Exception as exc:
-        last_exc = exc
-
-    for attempt, interval in enumerate(retry_intervals, start=1):
-        await trigger(
-            ON_RETRY,
-            attempt=attempt,
-            interval=interval,
-            error=last_exc,
-            messages=messages,
-            model=model,
-        )
-        await asyncio.sleep(interval)
-        try:
-            return await provider.create(
-                messages=messages, model=model, tools=tools, **extra_kwargs
-            )
-        except Exception as exc:
-            last_exc = exc
-
-    raise last_exc
+def _match_error_rule(exc: Exception, rules: list[ErrorRule]) -> ErrorRule | None:
+    """Find the first rule whose set fields all match the exception."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        status_code = getattr(exc, "code", None)
+    content = str(exc)
+    for rule in rules:
+        if rule.status_code is not None and status_code != rule.status_code:
+            continue
+        if rule.content_contains is not None and rule.content_contains not in content:
+            continue
+        return rule
+    return None
 
 
 def _coerce_tool_result(tool_call_id: str, raw_result: Any) -> ToolResult:
@@ -359,14 +318,104 @@ class Agent:
             if hasattr(provider, "_stream"):
                 extra_kwargs["_on_stream_text"] = _on_stream_text
                 extra_kwargs["_on_stream_thinking"] = _on_stream_thinking
-            response = await _create_with_retry(
-                provider,
-                messages=messages,
-                model=cfg.model,
-                tools=effective_tools,
-                extra_kwargs=extra_kwargs,
-                retry_intervals=cfg.retry_intervals,
-            )
+
+            try:
+                response = await provider.create(
+                    messages=messages,
+                    model=cfg.model,
+                    tools=effective_tools,
+                    **extra_kwargs,
+                )
+            except Exception as exc:
+                error_handling = getattr(provider, "error_handling", None)
+                if not error_handling:
+                    raise
+                rule = _match_error_rule(exc, error_handling)
+                if rule is None:
+                    raise
+
+                status_code = getattr(exc, "status_code", None)
+                if status_code is None:
+                    status_code = getattr(exc, "code", None)
+                error_message = getattr(exc, "message", None) or str(exc)
+
+                if rule.reaction == "retry":
+                    delay = rule.retry_after
+                    for _ in range(rule.retry_max):
+                        await trigger(
+                            ON_PROVIDER_ERROR,
+                            error=exc,
+                            status_code=status_code,
+                            error_message=error_message,
+                            reaction="retry",
+                            reaction_message=rule.message,
+                            messages=messages,
+                            model=cfg.model,
+                        )
+                        await asyncio.sleep(delay)
+                        delay *= rule.retry_backoff
+                        try:
+                            response = await provider.create(
+                                messages=messages,
+                                model=cfg.model,
+                                tools=effective_tools,
+                                **extra_kwargs,
+                            )
+                            break
+                        except Exception as retry_exc:
+                            exc = retry_exc
+                            if _match_error_rule(retry_exc, error_handling) is not rule:
+                                raise
+                            status_code = getattr(exc, "status_code", None)
+                            if status_code is None:
+                                status_code = getattr(exc, "code", None)
+                            error_message = getattr(exc, "message", None) or str(exc)
+                    else:
+                        raise exc
+                else:
+                    await trigger(
+                        ON_PROVIDER_ERROR,
+                        error=exc,
+                        status_code=status_code,
+                        error_message=error_message,
+                        reaction=rule.reaction,
+                        reaction_message=rule.message,
+                        messages=messages,
+                        model=cfg.model,
+                    )
+                    if rule.reaction == "terminate":
+                        await trigger(
+                            ON_FINISH,
+                            content=rule.message,
+                            messages=messages,
+                            iterations=iterations,
+                        )
+                        return Response(
+                            content=rule.message,
+                            messages=messages,
+                            iterations=iterations,
+                            usage=all_usage,
+                            stop_reason="failed",
+                        )
+                    if rule.reaction == "user_message":
+                        self._pending_user_messages.put_nowait(rule.message)
+                        continue
+                    if rule.reaction == "tool_result":
+                        for msg in reversed(messages):
+                            if msg.role == "assistant" and msg.tool_calls:
+                                for tc in msg.tool_calls:
+                                    messages.append(
+                                        provider.format_tool_result(
+                                            tc,
+                                            ToolResult(
+                                                tool_call_id=tc.id,
+                                                content=rule.message,
+                                                is_error=True,
+                                            ),
+                                        )
+                                    )
+                                break
+                        continue
 
             await trigger(AFTER_LLM_CALL, response=response, messages=messages)
             if response.thinking:

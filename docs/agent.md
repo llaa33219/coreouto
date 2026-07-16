@@ -42,7 +42,6 @@ agent = co.Agent(config)
 | `system_prompt`        | `str \| None`       | `None`  | System message prepended to the conversation |
 | `tools`                | `list[str]`         | `[]`    | Names of registered tools available to this agent |
 | `max_iterations`       | `int \| None`       | `None`  | Max loop iterations before raising `MaxIterationsError`; `None` = unlimited (default) |
-| `retry_intervals`      | `list[float] \| None` | `None` | Seconds to wait between retries when a provider call raises; `None` (or `[]`) = no retry, the exception propagates immediately (default). See [Retrying failed API calls](#retrying-failed-api-calls) |
 | `provider_config`      | `dict[str, Any]`    | `{}`    | Canonical settings (see [Normalized settings](providers.md#normalized-settings)); translated to provider-specific kwargs |
 | `provider_passthrough` | `dict[str, Any]`    | `{}`    | Non-canonical settings sent through to the SDK unchanged |
 | `parallel_tool_calls`  | `bool`              | `False` | Run multiple tool calls in a turn concurrently via `asyncio.gather` (see [Parallel tool execution](#parallel-tool-execution)) |
@@ -202,50 +201,75 @@ config = co.AgentConfig(
 )
 ```
 
-## Retrying failed API calls
+## Provider error handling
 
-By default `retry_intervals` is `None`, so when a provider call raises (network error, timeout, rate limit, 5xx, etc.) the exception propagates immediately and the loop ends — coreouto does not retry on its own.
-
-Set `retry_intervals` to a list of seconds to wait before each retry attempt. The first failure triggers a sleep of `intervals[0]` then a retry; if that fails, a sleep of `intervals[1]` then another retry; and so on. When every interval is exhausted, the last exception is re-raised. An empty list behaves like `None` (no retry).
+When `provider.create()` raises, the exception propagates by default. To handle errors per-provider, pass `error_handling` — a list of `ErrorRule` — to the provider constructor:
 
 ```python
-config = co.AgentConfig(
-    name="resilient",
-    model="claude-sonnet-4-6",
-    provider="anthropic",
-    retry_intervals=[1, 3, 5, 10, 30],  # up to 5 retries at these delays
+from coreouto._types import ErrorRule
+from coreouto.providers.openai import OpenAIProvider
+
+provider = OpenAIProvider(
+    api_key="...",
+    error_handling=[
+        ErrorRule(status_code=429, reaction="user_message",
+                  message="The service is rate-limiting requests. Slow down."),
+        ErrorRule(status_code=401, reaction="terminate",
+                  message="Authentication failed. Check your API key."),
+        ErrorRule(status_code=400, content_contains="tool", reaction="tool_result",
+                  message="Tool call rejected. Check arguments."),
+    ],
 )
+co.register_provider("my-openai", provider)
 ```
 
-A few notes:
+### How rules work
 
-- `retry_intervals=[1, 3, 5]` means **1 initial attempt + up to 3 retries** (4 total `provider.create` calls in the worst case).
-- Intervals must be non-negative. `0` is allowed and means "retry immediately with no delay".
-- The retry wraps every `provider.create` call in the loop, on every iteration — not just the first.
-- **Any `Exception` raised by the provider triggers a retry.** This covers network, timeout, rate-limit, and server errors uniformly without coreouto importing provider-specific exception types. A programmer error (bad kwargs) will simply fail again on each retry and surface once the intervals are spent.
-- Unrecoverable provider *terminations* (`max_tokens`, `refusal`, content filter, `SAFETY`, …) are **not** exceptions — they are normal responses that end the loop. Retry only applies when the provider call itself throws.
+When `provider.create()` raises, the loop checks each rule in order. A rule matches when **all** of its set fields match the exception:
 
-The same field is exposed on presets:
+- `status_code` — compared against `exception.status_code` (openai/anthropic) or `exception.code` (google-genai).
+- `content_contains` — checked as a substring of `str(exception)`.
+
+The first matching rule wins. Its `reaction` determines what happens:
+
+| Reaction | Effect |
+|----------|--------|
+| `"terminate"` | End the loop, return `message` as the Response content. |
+| `"user_message"` | Inject `message` as a user message, continue the loop. The model self-corrects. |
+| `"tool_result"` | Append `message` as an error tool result for the last assistant tool calls, continue the loop. Falls back to `user_message` when there are no preceding tool calls. |
+| `"retry"` | Sleep `retry_after` seconds, then retry `provider.create()`. Repeats up to `retry_max` times, multiplying the delay by `retry_backoff` each time. If exhausted, the exception propagates. `on_provider_error` fires on each attempt. |
+
+If no rule matches (or `error_handling` is not set), the exception propagates to the caller.
+
+### Predefined presets
+
+`coreouto.contrib.error_presets` ships ready-made rule lists. Import, compose, or extend:
 
 ```python
-preset = co.register_agent_preset(
-    "resilient", model="claude-sonnet-4-6", provider="anthropic",
-    retry_intervals=[1, 3, 5, 10, 30],
-)
+from coreouto.contrib.error_presets import COMMON_HTTP_ERRORS, INVALID_TOOL_ERRORS
+from coreouto.providers.openai import OpenAIProvider
+
+# Use as-is
+provider = OpenAIProvider(api_key="...", error_handling=COMMON_HTTP_ERRORS)
+
+# Extend with custom rules
+my_rules = COMMON_HTTP_ERRORS + [
+    ErrorRule(status_code=400, content_contains="context_length",
+              reaction="terminate", message="Context too long."),
+]
+provider = OpenAIProvider(api_key="...", error_handling=my_rules)
 ```
 
-### Observing retries with `on_retry`
+### Observing errors with `on_provider_error`
 
-Each retry fires the `on_retry` hook **before** the sleep, with `{attempt, interval, error, messages, model}`. Use it to log or metric retries:
+When a rule matches, the `on_provider_error` hook fires with the error details and the chosen reaction:
 
 ```python
-def log_retry(*, attempt, interval, error, **kwargs):
-    print(f"retry #{attempt} after {interval}s: {type(error).__name__}: {error}")
+def log_error(*, error, status_code, error_message, reaction, reaction_message, **kwargs):
+    print(f"HTTP {status_code}: {error_message} → {reaction}: {reaction_message}")
 
-co.register_hook(co.ON_RETRY, log_retry)
+co.register_hook(co.ON_PROVIDER_ERROR, log_error)
 ```
-
-`attempt` is 1-indexed (the first retry is attempt `1`). `before_llm_call` / `after_llm_call` bracket the logical per-iteration LLM call and fire once per iteration regardless of how many retries happened underneath.
 
 ## How the loop works
 
@@ -301,7 +325,7 @@ Eight hook events fire during the loop. See [Hooks](hooks.md) for details:
 - `on_iteration` -- at the end of each iteration
 - `on_finish` -- when the loop terminates (text content with no tool calls, or an unrecoverable provider termination)
 - `on_user_injection` -- when a user message is injected via `Agent.inject_user_message`
-- `on_retry` -- before each retry sleep when `retry_intervals` is set (see [Retrying failed API calls](#retrying-failed-api-calls))
+- `on_provider_error` -- when a provider error matches an `error_handling` rule (see [Provider error handling](#provider-error-handling))
 
 ## Provider config
 

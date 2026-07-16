@@ -37,6 +37,7 @@ class AnthropicProvider:
         base_url: str | None = None,
         client: Any | None = None,
         stream: bool = False,
+        error_handling: list | None = None,
     ) -> None:
         if client is not None:
             self._client = client
@@ -48,6 +49,7 @@ class AnthropicProvider:
         # ("Streaming is required for operations that may take longer than
         # 10 minutes"). Result is identical to the non-streaming path.
         self._stream = stream
+        self.error_handling = error_handling
 
     async def create(
         self,

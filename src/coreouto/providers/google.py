@@ -19,7 +19,7 @@ try:
     from google.genai import types
 except ImportError as exc:
     raise ImportError(
-        "The google-genai package is required. Install it with: pip install coreouto[google]"
+        "The google-genai package is required. Install with: pip install coreouto[google]"
     ) from exc
 
 
@@ -55,6 +55,7 @@ class GoogleProvider:
         client: Any | None = None,
         http_options: dict | None = None,
         stream: bool = False,
+        error_handling: list | None = None,
     ) -> None:
         if client is not None:
             self._client = client
@@ -67,6 +68,7 @@ class GoogleProvider:
             self._client = genai.Client(**kwargs)
         self._aio = self._client.aio
         self._stream = stream
+        self.error_handling = error_handling
 
     async def create(
         self,

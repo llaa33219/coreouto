@@ -172,6 +172,36 @@ class Usage(BaseModel):
         return self
 
 
+class ErrorRule(BaseModel):
+    """A provider error matching rule and its reaction.
+
+    When ``provider.create()`` raises, the loop checks each rule in the
+    provider's ``error_handling`` list. A rule matches when all of its set
+    fields match the exception (``status_code`` and/or ``content_contains``).
+    The first matching rule wins; its ``reaction`` determines what happens:
+
+    - ``"terminate"``: end the loop, return ``message`` as the Response.
+    - ``"user_message"``: inject ``message`` as a user message, continue loop.
+    - ``"tool_result"``: append ``message`` as an error tool result for the
+      last assistant tool calls, continue loop. Falls back to ``user_message``
+      when there are no preceding tool calls.
+    - ``"retry"``: sleep ``retry_after`` seconds, then retry
+      ``provider.create()``. Repeats up to ``retry_max`` times with
+      ``retry_backoff`` as the delay multiplier. If retries are exhausted,
+      the exception propagates.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    status_code: int | None = None
+    content_contains: str | None = None
+    reaction: Literal["terminate", "tool_result", "user_message", "retry"]
+    message: str
+    retry_after: float = 1.0
+    retry_backoff: float = 1.0
+    retry_max: int = 3
+
+
 class LLMResponse(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -202,7 +232,6 @@ class AgentConfig(BaseModel):
     system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
-    retry_intervals: list[float] | None = None
     provider_config: dict[str, Any] = Field(default_factory=dict)
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
     parallel_tool_calls: bool = False
@@ -218,16 +247,6 @@ class AgentConfig(BaseModel):
                 f"{names} are reserved tool names injected automatically by the agent "
                 f"loop. Remove them from `tools`."
             )
-        return self
-
-    @model_validator(mode="after")
-    def _retry_intervals_non_negative(self) -> AgentConfig:
-        if self.retry_intervals is not None:
-            for i, sec in enumerate(self.retry_intervals):
-                if sec < 0:
-                    raise ValueError(
-                        f"retry_intervals must be non-negative seconds; got {sec} at index {i}"
-                    )
         return self
 
 

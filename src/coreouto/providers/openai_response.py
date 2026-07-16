@@ -42,6 +42,7 @@ class OpenAIResponseProvider:
         base_url: str | None = None,
         client: Any | None = None,
         stream: bool = False,
+        error_handling: list | None = None,
     ) -> None:
         if client is not None:
             self._client = client
@@ -52,6 +53,7 @@ class OpenAIResponseProvider:
             self._api_key = api_key
             self._base_url = base_url
         self._stream = stream
+        self.error_handling = error_handling
 
     def _get_client(self) -> Any:
         if self._client is not None:

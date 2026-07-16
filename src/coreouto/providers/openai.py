@@ -20,6 +20,7 @@ class OpenAIProvider:
         base_url: str | None = None,
         client: AsyncOpenAI | None = None,
         stream: bool = False,
+        error_handling: list | None = None,
     ) -> None:
         if client is not None:
             self._client = client
@@ -30,6 +31,7 @@ class OpenAIProvider:
                 )
             self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._stream = stream
+        self.error_handling = error_handling
 
     async def create(
         self,

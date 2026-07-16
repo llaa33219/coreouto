@@ -25,7 +25,6 @@ class AgentPreset(BaseModel):
     system_prompt: str | None = None
     tools: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
-    retry_intervals: list[float] | None = None
     description: str | None = None
     provider_passthrough: dict[str, Any] = Field(default_factory=dict)
 
@@ -43,9 +42,6 @@ class AgentPreset(BaseModel):
             system_prompt=self.system_prompt,
             tools=list(self.tools),
             max_iterations=self.max_iterations,
-            retry_intervals=list(self.retry_intervals)
-            if self.retry_intervals is not None
-            else None,
             provider_passthrough=dict(self.provider_passthrough),
         )
 
@@ -59,7 +55,6 @@ def register_agent_preset(
     tools: list[str] | tuple[str, ...] = (),
     description: str | None = None,
     max_iterations: int | None = None,
-    retry_intervals: list[float] | tuple[float, ...] | None = None,
     provider_passthrough: dict[str, Any] | None = None,
 ) -> AgentPreset:
     preset = AgentPreset(
@@ -69,7 +64,6 @@ def register_agent_preset(
         system_prompt=system_prompt,
         tools=list(tools),
         max_iterations=max_iterations,
-        retry_intervals=list(retry_intervals) if retry_intervals is not None else None,
         description=description,
         provider_passthrough=provider_passthrough or {},
     )

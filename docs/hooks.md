@@ -16,22 +16,31 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `on_iteration`     | At the end of each loop iteration    | `iteration`, `messages`, `response`                    |
 | `on_finish`        | When the loop terminates (text content with no tool calls, or an unrecoverable provider termination) | `content`, `messages`, `iterations` |
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
-| `on_retry`         | Before each retry sleep, when `retry_intervals` is set and a provider call raised | `attempt`, `interval`, `error`, `messages`, `model` |
+| `on_provider_error`| When a provider error matches an `error_handling` rule | `error`, `status_code`, `error_message`, `reaction`, `reaction_message`, `messages`, `model` |
 
 ### The on_finish event
 
 Fires when the loop terminates, which happens when the model produces a response with text content and no tool calls (a clean termination — the assistant text is the final answer) or when an unrecoverable provider termination is reached (`max_tokens` / `length` / `refusal` / `content_filter` / `incomplete:content_filter` / `SAFETY` / `failed` / `cancelled`). The `content` kwarg is the final answer — the assistant text from the terminating response, or the response text as a fallback when the loop ended via a provider termination. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.
 
-### The on_retry event
+### The on_provider_error event
 
-Fires before each retry sleep when `AgentConfig.retry_intervals` is set and a provider call raised. The `attempt` kwarg is 1-indexed (first retry = `1`), `interval` is the seconds that will be slept, and `error` is the exception from the failed call. `before_llm_call` / `after_llm_call` bracket the logical per-iteration LLM call and fire once per iteration regardless of how many retries happened underneath, so `on_retry` is the canonical place to observe transport-level retries. See [Agent — Retrying failed API calls](agent.md#retrying-failed-api-calls).
+Fires when `provider.create()` raises and a matching `error_handling` rule is found on the provider. The kwargs carry everything you need to observe what happened and how it will be handled:
+
+- `error` — the raw exception object.
+- `status_code` — extracted from `exception.status_code` or `exception.code` (HTTP status, or `None`).
+- `error_message` — extracted from `exception.message` or `str(exception)`.
+- `reaction` — what will be done: `"terminate"`, `"user_message"`, or `"tool_result"`.
+- `reaction_message` — the message string from the matched `ErrorRule`.
+- `messages`, `model` — conversation context.
 
 ```python
-def log_retry(*, attempt, interval, error, **kwargs):
-    print(f"retry #{attempt} after {interval}s: {type(error).__name__}")
+def log_error(*, status_code, error_message, reaction, reaction_message, **kwargs):
+    print(f"HTTP {status_code}: {error_message} → {reaction}: {reaction_message}")
 
-co.register_hook(co.ON_RETRY, log_retry)
+co.register_hook(co.ON_PROVIDER_ERROR, log_error)
 ```
+
+The hook fires **after** the rule is matched but **before** the reaction is executed. If no rule matches (or the provider has no `error_handling`), the hook does not fire and the exception propagates. See [Agent — Provider error handling](agent.md#provider-error-handling).
 
 ### The on_stream_text event
 
@@ -270,7 +279,7 @@ co.AFTER_TOOL_CALL   # "after_tool_call"
 co.ON_ITERATION      # "on_iteration"
 co.ON_FINISH         # "on_finish"
 co.ON_USER_INJECTION # "on_user_injection"
-co.ON_RETRY          # "on_retry"
+co.ON_PROVIDER_ERROR  # "on_provider_error"
 ```
 
 Use whichever form you prefer. The string literals are more readable in examples; the constants protect against typos.

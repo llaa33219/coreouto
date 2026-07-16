@@ -72,11 +72,13 @@ Some frameworks let agents message each other directly, forming graphs or networ
 
 `agent_as_tool` gives you a clean delegation pattern: parent calls child, child returns a result. If you need something more complex (parallel agents, shared state, message passing), you build it on top of the primitives. coreouto doesn't dictate the topology.
 
-### Automatic retries
+### Provider error handling
 
-If the LLM returns a malformed response or a tool fails, coreouto doesn't retry automatically. The error goes back to the LLM as a tool result, and the LLM decides what to do. If you want retries with backoff, you write a hook or wrap the provider.
+coreouto does not retry or classify provider errors automatically. When `provider.create()` raises, the exception propagates to the caller unless the provider has `error_handling` rules configured.
 
-Automatic retries hide problems. If your tool is failing intermittently, you want to know about it, not have the system silently retry until it works.
+Error handling is a **provider-level concern**, not an agent-level one. Each provider accepts an `error_handling` parameter — a list of `ErrorRule` objects that match errors by HTTP status code and content, then react (terminate the loop, inject a user message, or return as a tool result). coreouto ships predefined rule presets in `contrib/error_presets.py` that you import, compose, and extend.
+
+This keeps error behavior explicit and per-provider. A proxy that returns 403 for rate limiting? You write a rule for it. A provider whose 400 means five different things? You match by `content_contains`. The classification is yours; coreouto only provides the hook point and the observability (`on_provider_error` fires when a rule matches).
 
 ### Built-in RAG, memory, or vector stores
 
