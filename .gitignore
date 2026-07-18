@@ -41,5 +41,6 @@ Thumbs.db
 # Logs
 *.log
 
-# Sisyphus agent work artifacts
+# Agent tooling work artifacts
 .sisyphus/
+.omo/
