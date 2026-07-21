@@ -152,6 +152,8 @@ hook = auto_summarize_hook(threshold=100_000, summarize_fn=my_summarizer)
 co.register_hook("on_iteration", hook)
 ```
 
+See `examples/24_auto_summarize.py` for a runnable demo, and `examples/23_loop_history_summarization.py` for carrying the compacted transcript into the next call's history.
+
 ### Token limit warning
 
 Prints (or calls a function) when a single response exceeds a token limit:
