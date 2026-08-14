@@ -24,6 +24,10 @@ crashes the second API call (the transcript ends with a tool result),
 scenario B cancels the call task while a tool is running (the transcript
 ends with an unanswered tool call).
 
+Both resumes use `call(history=...)` with no user message: when
+`user_message` is omitted the transcript is sent exactly as declared, so
+a history ending in a tool result (or a user message) simply continues.
+
 Run: python examples/28_resume_interrupted.py
 """
 
@@ -143,7 +147,7 @@ async def scenario_a_resume_directly() -> None:
 
     history = cut_to_last_answered_turn(live["messages"])
     print(f"  transcript tail: role={history[-1].role!r} -> resume as-is")
-    resp = await agent.call("The previous call crashed. Continue.", history=history)
+    resp = await agent.call(history=history)
     print(f"  response: {resp.content!r}")
 
 
@@ -175,10 +179,7 @@ async def scenario_b_cut_and_resume() -> None:
 
     history = cut_to_last_answered_turn(live["messages"])
     print(f"  transcript tail after cut: role={history[-1].role!r} -> resume from here")
-    resp = await agent.call(
-        "You were interrupted mid-tool. Skip that tool call and finish.",
-        history=history,
-    )
+    resp = await agent.call(history=history)
     print(f"  response: {resp.content!r}")
 
 
