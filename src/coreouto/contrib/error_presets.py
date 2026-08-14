@@ -72,4 +72,38 @@ INVALID_TOOL_ERRORS: list[ErrorRule] = [
     ),
 ]
 
-__all__ = ["COMMON_HTTP_ERRORS", "INVALID_TOOL_ERRORS"]
+# Timeout exceptions carry no HTTP status code and their messages vary by
+# SDK, so these rules match by exception class name (`exc_type`) instead:
+#   - "APITimeoutError": openai and anthropic SDKs
+#   - "TimeoutError": builtin / asyncio / concurrent.futures timeouts
+#   - "TimeoutException": httpx timeouts (google-genai's transport)
+# Pair with a provider-level `timeout` (seconds) so the SDK actually raises
+# instead of hanging forever.
+TIMEOUT_ERRORS: list[ErrorRule] = [
+    ErrorRule(
+        exc_type="APITimeoutError",
+        reaction="retry",
+        message="API request timed out — retrying.",
+        retry_after=1.0,
+        retry_backoff=2.0,
+        retry_max=3,
+    ),
+    ErrorRule(
+        exc_type="TimeoutError",
+        reaction="retry",
+        message="API request timed out — retrying.",
+        retry_after=1.0,
+        retry_backoff=2.0,
+        retry_max=3,
+    ),
+    ErrorRule(
+        exc_type="TimeoutException",
+        reaction="retry",
+        message="API request timed out — retrying.",
+        retry_after=1.0,
+        retry_backoff=2.0,
+        retry_max=3,
+    ),
+]
+
+__all__ = ["COMMON_HTTP_ERRORS", "INVALID_TOOL_ERRORS", "TIMEOUT_ERRORS"]

@@ -229,6 +229,7 @@ When `provider.create()` raises, the loop checks each rule in order. A rule matc
 
 - `status_code` — compared against `exception.status_code` (openai/anthropic) or `exception.code` (google-genai).
 - `content_contains` — checked as a substring of `str(exception)`.
+- `exc_type` — matched against the exception's class name or any base class name in its MRO. Use this for errors that carry no status code, e.g. timeouts: `ErrorRule(exc_type="APITimeoutError", reaction="retry", ...)` or the broader `exc_type="TimeoutError"`.
 
 The first matching rule wins. Its `reaction` determines what happens:
 
@@ -258,6 +259,18 @@ my_rules = COMMON_HTTP_ERRORS + [
               reaction="terminate", message="Context too long."),
 ]
 provider = OpenAIProvider(api_key="...", error_handling=my_rules)
+```
+
+`TIMEOUT_ERRORS` retries the common timeout exceptions (`APITimeoutError` from the openai/anthropic SDKs, builtin/asyncio `TimeoutError`, httpx `TimeoutException` from google-genai's transport) with backoff. Pair it with a provider-level `timeout` (see docs/providers.md) so a hung request actually raises:
+
+```python
+from coreouto.contrib.error_presets import COMMON_HTTP_ERRORS, TIMEOUT_ERRORS
+
+provider = OpenAIProvider(
+    api_key="...",
+    timeout=120,
+    error_handling=COMMON_HTTP_ERRORS + TIMEOUT_ERRORS,
+)
 ```
 
 ### Observing errors with `on_provider_error`

@@ -177,7 +177,12 @@ class ErrorRule(BaseModel):
 
     When ``provider.create()`` raises, the loop checks each rule in the
     provider's ``error_handling`` list. A rule matches when all of its set
-    fields match the exception (``status_code`` and/or ``content_contains``).
+    fields match the exception (``status_code``, ``content_contains``,
+    and/or ``exc_type``). ``exc_type`` matches the exception's class name
+    or any base class name in its MRO — e.g. ``"TimeoutError"`` matches
+    the builtin and asyncio timeouts. SDK timeout classes do not share a
+    common base (openai/anthropic ``APITimeoutError`` and httpx
+    ``TimeoutException`` are unrelated), so match each by its own name.
     The first matching rule wins; its ``reaction`` determines what happens:
 
     - ``"terminate"``: end the loop, return ``message`` as the Response.
@@ -195,6 +200,7 @@ class ErrorRule(BaseModel):
 
     status_code: int | None = None
     content_contains: str | None = None
+    exc_type: str | None = None
     reaction: Literal["terminate", "tool_result", "user_message", "retry"]
     message: str
     retry_after: float = 1.0

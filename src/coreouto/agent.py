@@ -190,10 +190,13 @@ def _match_error_rule(exc: Exception, rules: list[ErrorRule]) -> ErrorRule | Non
     if status_code is None:
         status_code = getattr(exc, "code", None)
     content = str(exc)
+    exc_type_names = {c.__name__ for c in type(exc).__mro__}
     for rule in rules:
         if rule.status_code is not None and status_code != rule.status_code:
             continue
         if rule.content_contains is not None and rule.content_contains not in content:
+            continue
+        if rule.exc_type is not None and rule.exc_type not in exc_type_names:
             continue
         return rule
     return None

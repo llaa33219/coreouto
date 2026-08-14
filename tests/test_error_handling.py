@@ -513,3 +513,145 @@ class TestContribPresets:
         )
         assert len(extended) == len(COMMON_HTTP_ERRORS) + 1
         assert len(COMMON_HTTP_ERRORS) < len(extended)
+
+
+# ===========================================================================
+# exc_type matching
+# ===========================================================================
+
+
+class TestExcTypeMatch:
+    def test_match_by_exact_class_name(self):
+        rules = [ErrorRule(exc_type="FakeStatusError", reaction="terminate", message="x")]
+        assert _match_error_rule(FakeStatusError(500), rules) is rules[0]
+
+    def test_match_by_base_class_name(self):
+        class SubError(FakeStatusError):
+            pass
+
+        rules = [ErrorRule(exc_type="FakeStatusError", reaction="terminate", message="x")]
+        assert _match_error_rule(SubError(500), rules) is rules[0]
+
+    def test_no_match_different_exc_type(self):
+        rules = [ErrorRule(exc_type="TimeoutError", reaction="retry", message="x")]
+        assert _match_error_rule(FakeStatusError(500), rules) is None
+
+    def test_match_builtin_timeout_error(self):
+        rules = [ErrorRule(exc_type="TimeoutError", reaction="retry", message="x")]
+        assert _match_error_rule(TimeoutError("timed out"), rules) is rules[0]
+
+    def test_combined_with_status_code_requires_both(self):
+        rules = [
+            ErrorRule(
+                exc_type="FakeStatusError",
+                status_code=503,
+                reaction="retry",
+                message="x",
+            )
+        ]
+        assert _match_error_rule(FakeStatusError(503), rules) is rules[0]
+        assert _match_error_rule(FakeStatusError(500), rules) is None
+        assert _match_error_rule(ValueError("boom"), rules) is None
+
+    def test_timeout_error_does_not_match_sdk_api_timeout(self):
+        class APITimeoutError(Exception):
+            pass
+
+        rules = [ErrorRule(exc_type="TimeoutError", reaction="retry", message="x")]
+        assert _match_error_rule(APITimeoutError("t"), rules) is None
+
+    def test_timeout_errors_preset_matches_sdk_timeouts(self):
+        from coreouto.contrib.error_presets import TIMEOUT_ERRORS
+
+        class APITimeoutError(Exception):
+            pass
+
+        assert _match_error_rule(APITimeoutError("t"), TIMEOUT_ERRORS) is not None
+        assert _match_error_rule(TimeoutError("t"), TIMEOUT_ERRORS) is not None
+        assert _match_error_rule(FakeStatusError(500), TIMEOUT_ERRORS) is None
+
+    @pytest.mark.asyncio
+    async def test_retry_on_timeout_via_exc_type(self):
+        mock = MockProvider(
+            [MockLLMResponse(content="ok", prompt_tokens=5, completion_tokens=5)],
+            provider_name="mock",
+        )
+        provider = TransientProvider(mock, fail_times=1, exc=TimeoutError("timed out"))
+        provider.error_handling = [
+            ErrorRule(
+                exc_type="TimeoutError",
+                reaction="retry",
+                message="timed out, retrying",
+                retry_after=0,
+            ),
+        ]
+        register_provider("mock", provider)
+
+        agent = Agent(_config())
+        response = await agent.call("hello")
+
+        assert response.content == "ok"
+        assert provider.create_call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retry_exhausted_propagates_with_exc_type(self):
+        provider = TransientProvider(
+            MockProvider([], provider_name="mock"),
+            fail_times=99,
+            exc=TimeoutError("timed out"),
+        )
+        provider.error_handling = [
+            ErrorRule(
+                exc_type="TimeoutError",
+                reaction="retry",
+                message="timed out, retrying",
+                retry_after=0,
+                retry_max=2,
+            ),
+        ]
+        register_provider("mock", provider)
+
+        agent = Agent(_config())
+        with pytest.raises(TimeoutError):
+            await agent.call("hello")
+
+        assert provider.create_call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_retry_different_exc_type_propagates(self):
+        mock = MockProvider(
+            [MockLLMResponse(content="ok", prompt_tokens=5, completion_tokens=5)],
+            provider_name="mock",
+        )
+
+        class SwitchingExcProvider:
+            def __init__(self):
+                self.error_handling = [
+                    ErrorRule(
+                        exc_type="TimeoutError",
+                        reaction="retry",
+                        message="timed out",
+                        retry_after=0,
+                        retry_max=5,
+                    ),
+                ]
+                self._call = 0
+
+            async def create(self, messages, *, model, tools=None, system_prompt=None, **kwargs):
+                self._call += 1
+                if self._call == 1:
+                    raise TimeoutError("first")
+                raise FakeStatusError(500, "second")
+
+            def format_assistant_message(self, response):
+                return mock.format_assistant_message(response)
+
+            def format_tool_result(self, tool_call, result):
+                return mock.format_tool_result(tool_call, result)
+
+        register_provider("mock", SwitchingExcProvider())
+
+        agent = Agent(_config())
+        with pytest.raises(FakeStatusError) as exc_info:
+            await agent.call("hello")
+        assert exc_info.value.status_code == 500
