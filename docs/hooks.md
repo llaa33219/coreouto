@@ -121,7 +121,7 @@ co.clear_hooks()                    # clear all events
 
 ## Contrib hooks
 
-`coreouto.contrib.hooks` ships seven ready-made hook factories. They're opt-in: import and register the ones you need.
+`coreouto.contrib.hooks` ships ten ready-made hook factories. They're opt-in: import and register the ones you need.
 
 ### Token collection
 
@@ -223,6 +223,58 @@ from coreouto.contrib.hooks import thinking_printer_hook
 
 co.register_hook("on_stream_thinking", thinking_printer_hook())
 ```
+
+### Activity tracker
+
+Answers "how many seconds since the loop last did anything?" (tool result, API call, iteration, ...). Register the hook on every event you count as activity; each firing resets the clock:
+
+```python
+from coreouto.contrib.hooks import activity_tracker_hook
+
+hook, state = activity_tracker_hook()
+for event in ("after_llm_call", "after_tool_call", "on_iteration", "on_provider_error"):
+    co.register_hook(event, hook)
+
+state.seconds_since_last_activity()  # float, seconds
+```
+
+### API call tracker
+
+Answers "how many seconds since the last API request started?" and whether one is in flight right now. Returns a dict of hooks to register:
+
+```python
+from coreouto.contrib.hooks import api_call_tracker_hook
+
+hooks, state = api_call_tracker_hook()
+for event, fn in hooks.items():
+    co.register_hook(event, fn)
+
+state.in_flight                # True between before_llm_call and after_llm_call
+state.seconds_since_request()  # float or None (no request yet)
+state.seconds_since_response() # float or None (no response yet)
+state.last_duration            # seconds the last completed call took
+```
+
+`after_llm_call` does not fire on provider errors, so `in_flight` stays `True` through error-rule handling. Register `hooks["after_llm_call"]` on `"on_provider_error"` too if you want errors to close the window.
+
+### Loop progress
+
+Answers "is the loop actively working on something, or is it wedged?":
+
+```python
+from coreouto.contrib.hooks import loop_progress_hook
+
+hooks, state = loop_progress_hook()
+for event, fn in hooks.items():
+    co.register_hook(event, fn)
+
+state.phase               # "llm_call" | "tool_call" | None
+state.is_stalled(1800)    # True when no tracked event fired for 1800s
+```
+
+`is_stalled` fires whether the loop is hung *inside* an operation (`state.phase` tells you which) or stopped *between* operations. The hooks do not track `on_provider_error` — `phase` stays `"llm_call"` through error-rule retry handling until the next `after_llm_call`. See `examples/27_wakeup.py` for a watchdog that uses all three trackers to restart a dead loop.
+
+All three trackers accept a `clock` parameter (defaults to `time.monotonic`) for testing.
 
 ## Writing your own hooks
 

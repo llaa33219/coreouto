@@ -8,7 +8,10 @@ from coreouto._types import LLMResponse, Message, ToolResult, Usage
 from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
+    BEFORE_LLM_CALL,
+    BEFORE_TOOL_CALL,
     ON_ITERATION,
+    ON_PROVIDER_ERROR,
     ON_STREAM_TEXT,
     ON_STREAM_THINKING,
     clear_hooks,
@@ -354,3 +357,121 @@ def test_thinking_printer_hook_prints_deltas(capsys: pytest.CaptureSelector) -> 
     asyncio_run(trigger(ON_STREAM_THINKING, text="step"))
     captured = capsys.readouterr()
     assert captured.out == "Reasoning step"
+
+
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_activity_tracker_hook_reports_silence() -> None:
+    from coreouto.contrib.hooks import activity_tracker_hook
+
+    clock = _FakeClock()
+    hook, state = activity_tracker_hook(clock=clock)
+    register_hook(AFTER_LLM_CALL, hook)
+
+    assert state.seconds_since_last_activity() == 0
+    clock.advance(12)
+    assert state.seconds_since_last_activity() == 12
+
+    asyncio_run(trigger(AFTER_LLM_CALL, response=LLMResponse(content="x")))
+    assert state.seconds_since_last_activity() == 0
+    clock.advance(1.5)
+    assert state.seconds_since_last_activity() == 1.5
+
+
+def test_api_call_tracker_hook_tracks_request_lifecycle() -> None:
+    from coreouto.contrib.hooks import api_call_tracker_hook
+
+    clock = _FakeClock()
+    hooks, state = api_call_tracker_hook(clock=clock)
+    for event, fn in hooks.items():
+        register_hook(event, fn)
+
+    assert state.seconds_since_request() is None
+    assert state.seconds_since_response() is None
+    assert state.in_flight is False
+
+    asyncio_run(trigger(BEFORE_LLM_CALL, messages=[], model="m", tools=[]))
+    assert state.in_flight is True
+    assert state.seconds_since_request() == 0
+
+    clock.advance(4)
+    asyncio_run(trigger(AFTER_LLM_CALL, response=LLMResponse(content="x"), messages=[]))
+    assert state.in_flight is False
+    assert state.last_duration == 4
+    assert state.seconds_since_response() == 0
+    assert state.seconds_since_request() == 4
+
+    clock.advance(2)
+    assert state.seconds_since_response() == 2
+    assert state.seconds_since_request() == 6
+
+
+def test_loop_progress_hook_tracks_phase_and_stall() -> None:
+    from coreouto.contrib.hooks import loop_progress_hook
+
+    clock = _FakeClock()
+    hooks, state = loop_progress_hook(clock=clock)
+    for event, fn in hooks.items():
+        register_hook(event, fn)
+
+    assert state.phase is None
+    assert state.is_stalled(30) is False
+
+    asyncio_run(trigger(BEFORE_LLM_CALL, messages=[], model="m", tools=[]))
+    assert state.phase == "llm_call"
+    asyncio_run(trigger(AFTER_LLM_CALL, response=LLMResponse(content="x"), messages=[]))
+    assert state.phase is None
+
+    asyncio_run(trigger(BEFORE_TOOL_CALL, name="t", arguments={}))
+    assert state.phase == "tool_call"
+
+    clock.advance(31)
+    assert state.is_stalled(30) is True
+
+    asyncio_run(
+        trigger(
+            AFTER_TOOL_CALL,
+            name="t",
+            result=ToolResult(tool_call_id="1", content="ok"),
+        )
+    )
+    assert state.phase is None
+    assert state.is_stalled(30) is False
+
+
+def test_api_call_tracker_hook_error_closes_window_when_registered() -> None:
+    from coreouto.contrib.hooks import api_call_tracker_hook
+
+    clock = _FakeClock()
+    hooks, state = api_call_tracker_hook(clock=clock)
+    for event, fn in hooks.items():
+        register_hook(event, fn)
+    register_hook(ON_PROVIDER_ERROR, hooks[AFTER_LLM_CALL])
+
+    asyncio_run(trigger(BEFORE_LLM_CALL, messages=[], model="m", tools=[]))
+    assert state.in_flight is True
+
+    clock.advance(2)
+    asyncio_run(
+        trigger(
+            ON_PROVIDER_ERROR,
+            error=TimeoutError("t"),
+            status_code=None,
+            error_message="t",
+            reaction="retry",
+            reaction_message="x",
+            messages=[],
+            model="m",
+        )
+    )
+    assert state.in_flight is False
+    assert state.last_duration == 2
