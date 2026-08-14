@@ -38,12 +38,18 @@ class AnthropicProvider:
         client: Any | None = None,
         stream: bool = False,
         error_handling: list | None = None,
+        timeout: float | None = None,
     ) -> None:
+        # timeout: per-request timeout in seconds, forwarded to the SDK client.
+        # Ignored when `client` is provided (configure it on the client itself).
         if client is not None:
             self._client = client
         else:
             client_cls = _import_anthropic()
-            self._client = client_cls(api_key=api_key, base_url=base_url)
+            client_kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+            if timeout is not None:
+                client_kwargs["timeout"] = timeout
+            self._client = client_cls(**client_kwargs)
         # Stream over the wire, reassemble into the same `Message` shape.
         # Works around the SDK's pre-flight ValueError for high max_tokens
         # ("Streaming is required for operations that may take longer than
@@ -327,5 +333,6 @@ def register(
     api_key: str | None = None,
     base_url: str | None = None,
     name: str = "anthropic",
+    timeout: float | None = None,
 ) -> None:
-    register_provider(name, AnthropicProvider(api_key=api_key, base_url=base_url))
+    register_provider(name, AnthropicProvider(api_key=api_key, base_url=base_url, timeout=timeout))

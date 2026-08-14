@@ -1098,3 +1098,34 @@ async def test_stream_invokes_thinking_callback(fake_client):
         _on_stream_thinking=cb,
     )
     assert received == ["Thinking hard..."]
+
+
+def test_constructor_timeout_converted_to_milliseconds(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers.google import GoogleProvider
+
+    factory = _ClientFactory()
+    monkeypatch.setattr("coreouto.providers.google.genai.Client", factory)
+    GoogleProvider(api_key="k", timeout=30.0)
+    assert factory.constructed[0].recorded_args["http_options"] == {"timeout": 30000}
+
+
+def test_constructor_timeout_overrides_http_options_timeout(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers.google import GoogleProvider
+
+    factory = _ClientFactory()
+    monkeypatch.setattr("coreouto.providers.google.genai.Client", factory)
+    GoogleProvider(api_key="k", http_options={"timeout": 999}, timeout=10.0)
+    assert factory.constructed[0].recorded_args["http_options"] == {"timeout": 10000}
+
+
+def test_register_forwards_timeout(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers import clear_providers, get_provider
+    from coreouto.providers.google import register
+
+    factory = _ClientFactory()
+    monkeypatch.setattr("coreouto.providers.google.genai.Client", factory)
+    clear_providers()
+    register(api_key="x", name="google-timeout", timeout=5.0)
+    assert factory.constructed[0].recorded_args["http_options"] == {"timeout": 5000}
+    assert get_provider("google-timeout") is not None
+    clear_providers()

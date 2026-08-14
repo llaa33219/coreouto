@@ -407,3 +407,44 @@ async def test_stream_invokes_thinking_callback() -> None:
         messages=[Message(role="user", content="hi")], model="gpt-4", _on_stream_thinking=cb
     )
     assert received == ["Thinking..."]
+
+
+def test_timeout_forwarded_to_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class RecordingOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", RecordingOpenAI)
+    openai_provider.OpenAIProvider(api_key="k", timeout=12.5)
+    assert captured["timeout"] == 12.5
+
+
+def test_timeout_omitted_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    class RecordingOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", RecordingOpenAI)
+    openai_provider.OpenAIProvider(api_key="k")
+    assert "timeout" not in captured
+
+
+def test_register_forwards_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    from coreouto.providers import clear_providers, get_provider
+
+    captured: dict[str, Any] = {}
+
+    class RecordingOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(openai_provider, "AsyncOpenAI", RecordingOpenAI)
+    clear_providers()
+    openai_provider.register(api_key="k", name="openai-timeout", timeout=7.5)
+    assert get_provider("openai-timeout") is not None
+    assert captured["timeout"] == 7.5
+    clear_providers()

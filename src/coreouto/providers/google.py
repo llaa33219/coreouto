@@ -56,13 +56,20 @@ class GoogleProvider:
         http_options: dict | None = None,
         stream: bool = False,
         error_handling: list | None = None,
+        timeout: float | None = None,
     ) -> None:
+        # timeout: per-request timeout in seconds. The google-genai SDK takes
+        # HttpOptions.timeout in milliseconds, so it is converted here and
+        # overrides http_options["timeout"]. Ignored when `client` is
+        # provided (configure it on the client itself).
         if client is not None:
             self._client = client
         else:
             kwargs: dict[str, Any] = {}
             if api_key is not None:
                 kwargs["api_key"] = api_key
+            if timeout is not None:
+                http_options = {**(http_options or {}), "timeout": int(timeout * 1000)}
             if http_options is not None:
                 kwargs["http_options"] = http_options
             self._client = genai.Client(**kwargs)
@@ -338,5 +345,8 @@ def register(
     api_key: str | None = None,
     name: str = "google",
     http_options: dict | None = None,
+    timeout: float | None = None,
 ) -> None:
-    register_provider(name, GoogleProvider(api_key=api_key, http_options=http_options))
+    register_provider(
+        name, GoogleProvider(api_key=api_key, http_options=http_options, timeout=timeout)
+    )

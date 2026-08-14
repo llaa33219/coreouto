@@ -100,6 +100,23 @@ co.register_agent_preset(
 
 Install: `pip install coreouto[openai]`
 
+## Request timeout
+
+All built-in providers accept an optional `timeout` (seconds) constructor parameter, forwarded to the SDK client:
+
+```python
+co.providers.openai.register(api_key="sk-...", timeout=120)
+co.providers.anthropic.register(api_key="sk-ant-...", timeout=120)
+co.providers.google.register(api_key="...", timeout=120)
+co.providers.openai_response.register(api_key="sk-...", timeout=120)
+```
+
+The same parameter exists on each provider class (`OpenAIProvider(timeout=...)`, etc.). Notes:
+
+- google-genai's `HttpOptions.timeout` is in milliseconds — coreouto converts the seconds value for you (and it overrides `http_options["timeout"]`).
+- When you pass your own `client=`, `timeout` is ignored — configure it on the client itself.
+- A timeout only makes the SDK *raise*. To *react* (e.g. retry), add timeout rules to `error_handling` — see `TIMEOUT_ERRORS` in docs/agent.md, and `examples/27_wakeup.py` for a full watchdog/wakeup setup.
+
 ## Custom endpoints
 
 All built-in providers support custom endpoints via constructor arguments. This is useful for proxying, self-hosting, and region routing.

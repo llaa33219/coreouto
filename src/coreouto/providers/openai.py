@@ -21,7 +21,10 @@ class OpenAIProvider:
         client: AsyncOpenAI | None = None,
         stream: bool = False,
         error_handling: list | None = None,
+        timeout: float | None = None,
     ) -> None:
+        # timeout: per-request timeout in seconds, forwarded to the SDK client.
+        # Ignored when `client` is provided (configure it on the client itself).
         if client is not None:
             self._client = client
         else:
@@ -29,7 +32,10 @@ class OpenAIProvider:
                 raise ImportError(
                     "The openai package is required. Install it with: pip install coreouto[openai]"
                 )
-            self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            client_kwargs: dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+            if timeout is not None:
+                client_kwargs["timeout"] = timeout
+            self._client = AsyncOpenAI(**client_kwargs)
         self._stream = stream
         self.error_handling = error_handling
 
@@ -202,5 +208,6 @@ def register(
     api_key: str | None = None,
     base_url: str | None = None,
     name: str = "openai",
+    timeout: float | None = None,
 ) -> None:
-    register_provider(name, OpenAIProvider(api_key=api_key, base_url=base_url))
+    register_provider(name, OpenAIProvider(api_key=api_key, base_url=base_url, timeout=timeout))

@@ -851,3 +851,40 @@ async def test_stream_invokes_thinking_callback(fake_client):
         messages=[Message(role="user", content="hi")], model="m", _on_stream_thinking=cb
     )
     assert received == ["Reasoning ", "step by step"]
+
+
+def test_anthropic_provider_passes_timeout_to_client(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    monkeypatch.setattr(
+        "coreouto.providers.anthropic._import_anthropic",
+        lambda: FakeAsyncAnthropicWithRecording,
+    )
+    provider = AnthropicProvider(api_key="test", timeout=45.0)
+    assert provider._client.recorded_args["timeout"] == 45.0
+
+
+def test_anthropic_provider_omits_timeout_by_default(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers.anthropic import AnthropicProvider
+
+    monkeypatch.setattr(
+        "coreouto.providers.anthropic._import_anthropic",
+        lambda: FakeAsyncAnthropicWithRecording,
+    )
+    provider = AnthropicProvider(api_key="test")
+    assert "timeout" not in provider._client.recorded_args
+
+
+def test_anthropic_register_forwards_timeout(monkeypatch: pytest.MonkeyPatch):
+    from coreouto.providers import clear_providers, get_provider
+    from coreouto.providers.anthropic import register
+
+    monkeypatch.setattr(
+        "coreouto.providers.anthropic._import_anthropic",
+        lambda: FakeAsyncAnthropicWithRecording,
+    )
+    clear_providers()
+    register(api_key="x", name="anthropic-timeout", timeout=9.0)
+    provider = get_provider("anthropic-timeout")
+    assert provider._client.recorded_args["timeout"] == 9.0
+    clear_providers()

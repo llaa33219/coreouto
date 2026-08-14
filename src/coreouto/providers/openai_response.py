@@ -43,15 +43,20 @@ class OpenAIResponseProvider:
         client: Any | None = None,
         stream: bool = False,
         error_handling: list | None = None,
+        timeout: float | None = None,
     ) -> None:
+        # timeout: per-request timeout in seconds, forwarded to the SDK client.
+        # Ignored when `client` is provided (configure it on the client itself).
         if client is not None:
             self._client = client
             self._api_key = None
             self._base_url = None
+            self._timeout = None
         else:
             self._client = None
             self._api_key = api_key
             self._base_url = base_url
+            self._timeout = timeout
         self._stream = stream
         self.error_handling = error_handling
 
@@ -65,7 +70,10 @@ class OpenAIResponseProvider:
                 "openai is required for OpenAIResponseProvider. "
                 "Install with: pip install coreouto[openai]"
             ) from exc
-        self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
+        client_kwargs: dict[str, Any] = {"api_key": self._api_key, "base_url": self._base_url}
+        if self._timeout is not None:
+            client_kwargs["timeout"] = self._timeout
+        self._client = AsyncOpenAI(**client_kwargs)
         return self._client
 
     async def create(
@@ -330,8 +338,11 @@ def register(
     api_key: str | None = None,
     base_url: str | None = None,
     name: str = "openai-response",
+    timeout: float | None = None,
 ) -> None:
-    register_provider(name, OpenAIResponseProvider(api_key=api_key, base_url=base_url))
+    register_provider(
+        name, OpenAIResponseProvider(api_key=api_key, base_url=base_url, timeout=timeout)
+    )
 
 
 try:
