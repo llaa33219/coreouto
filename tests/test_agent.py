@@ -2134,3 +2134,58 @@ async def test_anthropic_tool_use_stop_reason_with_tool_calls_executes_them():
     tool_msgs = [m for m in response.messages if m.role == "tool" and m.name == "echo"]
     assert len(tool_msgs) == 1
     assert tool_msgs[0].content == "echo: hi"
+
+
+async def test_call_without_user_message_sends_history_as_declared():
+    provider = MockProvider(provider_name="mock")
+    provider.queue(_terminate_response("continued"))
+    register_provider("mock", provider)
+
+    history = [
+        Message(role="user", content="start"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="t1", name="lookup", arguments={})],
+        ),
+        Message(role="tool", content="results", tool_call_id="t1", name="lookup"),
+    ]
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    response = await agent.call(history=history)
+
+    assert response.content == "continued"
+    sent = provider.calls[0]["messages"]
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool"]
+    assert sent[-1].content == "results"
+
+
+async def test_call_without_user_message_and_history_raises():
+    provider = MockProvider(provider_name="mock")
+    register_provider("mock", provider)
+
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    with pytest.raises(ValueError, match="user_message=None"):
+        await agent.call()
+    assert provider.calls == []
+
+
+async def test_call_with_user_message_still_appends_after_tool_tail():
+    provider = MockProvider(provider_name="mock")
+    provider.queue(_terminate_response("ok"))
+    register_provider("mock", provider)
+
+    history = [
+        Message(role="user", content="start"),
+        Message(
+            role="assistant",
+            content="",
+            tool_calls=[ToolCall(id="t1", name="lookup", arguments={})],
+        ),
+        Message(role="tool", content="results", tool_call_id="t1", name="lookup"),
+    ]
+    agent = Agent(AgentConfig(name="test", model="m", provider="mock"))
+    await agent.call("new instruction", history=history)
+
+    sent = provider.calls[0]["messages"]
+    assert [m.role for m in sent] == ["system", "user", "assistant", "tool", "user"]
+    assert sent[-1].content == "new instruction"

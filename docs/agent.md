@@ -84,6 +84,8 @@ Use `call_sync()` from scripts and CLI tools. Use `call()` inside async code, we
 
 `call()` and `call_sync()` accept an optional `history: list[Message]` parameter. When provided, the history is prepended to the message list (after the system prompt, before the new user message). coreouto does not store conversation state between calls — that is the caller's responsibility.
 
+`user_message` itself is optional. If you pass one, it is always appended — a declared message is never silently dropped, even when the history ends with a tool result. If you omit it (`user_message=None`), the transcript is sent exactly as declared: a history ending in a tool result simply continues from there, with nothing appended. Omitting both raises `ValueError` (there would be nothing to continue from).
+
 Two patterns are common:
 
 **Accumulate** — pass the messages from a previous `Response` to continue the conversation:

@@ -243,7 +243,7 @@ class Agent:
 
     def call_sync(
         self,
-        user_message: str,
+        user_message: str | None = None,
         *,
         override: AgentConfig | None = None,
         history: list[Message] | None = None,
@@ -254,7 +254,7 @@ class Agent:
 
     async def call(
         self,
-        user_message: str,
+        user_message: str | None = None,
         *,
         override: AgentConfig | None = None,
         history: list[Message] | None = None,
@@ -278,7 +278,14 @@ class Agent:
             messages.append(Message(role="system", content=_DEFAULT_SYSTEM_PROMPT))
         if history:
             messages.extend(history)
-        messages.append(Message(role="user", content=user_message))
+        if user_message is not None:
+            # A declared user message is always appended — never dropped.
+            messages.append(Message(role="user", content=user_message))
+        elif not history:
+            raise ValueError(
+                "call() with user_message=None sends the transcript exactly as "
+                "declared, so a non-empty history is required"
+            )
 
         iterations = 0
         all_usage: list[Usage] = []

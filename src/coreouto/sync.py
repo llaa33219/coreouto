@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 def call_sync(
     agent: Agent,
-    user_message: str,
+    user_message: str | None = None,
     *,
     override=None,
     history: list[Message] | None = None,
