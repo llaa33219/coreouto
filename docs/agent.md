@@ -239,7 +239,7 @@ The first matching rule wins. Its `reaction` determines what happens:
 |----------|--------|
 | `"terminate"` | End the loop, return `message` as the Response content. |
 | `"user_message"` | Inject `message` as a user message, continue the loop. The model self-corrects. |
-| `"tool_result"` | Append `message` as an error tool result for the last assistant tool calls, continue the loop. Falls back to `user_message` when there are no preceding tool calls. |
+| `"tool_result"` | Append `message` as an error tool result for the last assistant tool calls, continue the loop. When there are no preceding tool calls, nothing is appended and the loop continues with the request unchanged. |
 | `"retry"` | Sleep `retry_after` seconds, then retry `provider.create()`. Repeats up to `retry_max` times, multiplying the delay by `retry_backoff` each time. If exhausted, the exception propagates. `on_provider_error` fires on each attempt. |
 
 If no rule matches (or `error_handling` is not set), the exception propagates to the caller.
@@ -262,6 +262,8 @@ my_rules = COMMON_HTTP_ERRORS + [
 ]
 provider = OpenAIProvider(api_key="...", error_handling=my_rules)
 ```
+
+`INVALID_TOOL_ERRORS` answers provider 400s about tool calls with the `"tool_result"` reaction. That is the right fix only for a *dangling* tool call (a call with no result in history — the appended error result completes the pair). If the 400 is caused by a *malformed* tool call sitting in the history, the reaction leaves the offending message in place, so every following request 400s again. For that shape, pair a `"retry"` rule with a history-repair `on_provider_error` hook — see `examples/29_malformed_tool_call.py`.
 
 `TIMEOUT_ERRORS` retries the common timeout exceptions (`APITimeoutError` from the openai/anthropic SDKs, builtin/asyncio `TimeoutError`, httpx `TimeoutException` from google-genai's transport) with backoff. Pair it with a provider-level `timeout` (see docs/providers.md) so a hung request actually raises:
 

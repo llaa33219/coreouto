@@ -188,8 +188,9 @@ class ErrorRule(BaseModel):
     - ``"terminate"``: end the loop, return ``message`` as the Response.
     - ``"user_message"``: inject ``message`` as a user message, continue loop.
     - ``"tool_result"``: append ``message`` as an error tool result for the
-      last assistant tool calls, continue loop. Falls back to ``user_message``
-      when there are no preceding tool calls.
+      last assistant tool calls, continue loop. When there are no preceding
+      tool calls, nothing is appended and the loop continues with the
+      request unchanged.
     - ``"retry"``: sleep ``retry_after`` seconds, then retry
       ``provider.create()``. Repeats up to ``retry_max`` times with
       ``retry_backoff`` as the delay multiplier. If retries are exhausted,
