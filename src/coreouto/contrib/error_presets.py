@@ -57,6 +57,13 @@ COMMON_HTTP_ERRORS: list[ErrorRule] = [
     ),
 ]
 
+# "tool_result" is the right reaction only when the 400 comes from a
+# *dangling* tool call (a call with no result in history — the appended
+# error result completes the pair). When the 400 comes from a *malformed*
+# tool call, the offending assistant message stays in history, so every
+# retry 400s again and duplicate results pile up. For that shape, pair a
+# "retry" rule with a history-repair hook — see
+# examples/29_malformed_tool_call.py.
 INVALID_TOOL_ERRORS: list[ErrorRule] = [
     ErrorRule(
         status_code=400,
