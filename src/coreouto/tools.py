@@ -70,7 +70,16 @@ def _type_to_schema(tp: Any) -> dict[str, Any]:
         pass
 
     if origin is typing.Literal:
-        return {"enum": list(args)}
+        schema: dict[str, Any] = {"enum": list(args)}
+        json_types = {
+            {str: "string", int: "integer", float: "number", bool: "boolean"}.get(type(a))
+            for a in args
+        }
+        if len(json_types) == 1:
+            json_type = json_types.pop()
+            if json_type is not None:
+                schema["type"] = json_type
+        return schema
 
     raise NotImplementedError(f"Cannot extract schema for {tp}")
 

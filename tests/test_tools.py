@@ -253,7 +253,21 @@ class TestExtractSchema:
             pass
 
         schema = extract_schema(fn)
-        assert schema["properties"]["mode"] == {"enum": ["a", "b"]}
+        assert schema["properties"]["mode"] == {"type": "string", "enum": ["a", "b"]}
+
+    def test_literal_int(self) -> None:
+        def fn(level: Literal[1, 2, 3]) -> None:
+            pass
+
+        schema = extract_schema(fn)
+        assert schema["properties"]["level"] == {"type": "integer", "enum": [1, 2, 3]}
+
+    def test_literal_mixed_types_omit_type(self) -> None:
+        def fn(value: Literal["a", 1]) -> None:
+            pass
+
+        schema = extract_schema(fn)
+        assert schema["properties"]["value"] == {"enum": ["a", 1]}
 
     def test_unsupported_type_raises(self) -> None:
         class Custom:

@@ -47,7 +47,7 @@ coreouto inspects your function's type hints and builds a JSON Schema from them.
 | `list` (bare)              | `{"type": "array"}`                  |
 | `dict`                     | `{"type": "object"}`                 |
 | `Optional[str]`            | `{"type": "string"}` (not required)  |
-| `Literal["a", "b"]`        | `{"enum": ["a", "b"]}`              |
+| `Literal["a", "b"]`        | `{"type": "string", "enum": ["a", "b"]}` (type inferred from the values; omitted when mixed) |
 | `BaseModel` subclass       | The model's JSON Schema              |
 
 Parameters without a default value are marked `required`. Parameters with a default value or `Optional` type are not.
