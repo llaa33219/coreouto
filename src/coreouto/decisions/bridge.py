@@ -10,8 +10,10 @@ error.
 
 from __future__ import annotations
 
+import inspect
 import json
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from coreouto._types import LLMResponse, Message, ToolCall, ToolResult
@@ -21,11 +23,19 @@ from coreouto.decisions.base import (
     ChoiceAnswer,
     ChoiceQuestion,
     DecisionModel,
+    MediaBlock,
     NoulAnswer,
     NoulQuestion,
     Question,
 )
 from coreouto.tools import Tool
+
+# Called once per loop iteration with the current transcript; returns the
+# multimodal input for that turn (e.g. a fresh screenshot) or None.
+TurnInput = Callable[
+    [list[Message]],
+    list[MediaBlock] | Awaitable[list[MediaBlock] | None] | None,
+]
 
 GOAL_COMPLETE_KEY = "goal_complete"
 NEXT_TOOL_KEY = "next_tool"
@@ -150,11 +160,13 @@ class DecisionProvider:
         decision_model: DecisionModel | str,
         *,
         error_handling: list | None = None,
+        turn_input: TurnInput | None = None,
     ) -> None:
         if isinstance(decision_model, str):
             decision_model = get_decision_model(decision_model)
         self._decision_model = decision_model
         self.error_handling = error_handling
+        self._turn_input = turn_input
 
     async def create(
         self,
@@ -169,6 +181,7 @@ class DecisionProvider:
         tools = list(tools or [])
         _validate_tools(tools)
         state = _build_state(messages, system_prompt)
+        media = await self._collect_media(messages)
 
         if not tools:
             # Single-answer mode: no goal detection, answer immediately.
@@ -177,7 +190,7 @@ class DecisionProvider:
                     "a decision provider with no tools can only answer typed "
                     "questions — pass answer_format to Agent.call()."
                 )
-            result = await self._decide(state, answer_format, model, kwargs)
+            result = await self._decide(state, answer_format, model, media, kwargs)
             return LLMResponse(
                 content=None,
                 tool_calls=[],
@@ -188,11 +201,11 @@ class DecisionProvider:
             )
 
         questions = self._iteration_questions(tools)
-        result = await self._decide(state, questions, model, kwargs)
+        result = await self._decide(state, questions, model, media, kwargs)
 
         if self._goal_complete(result):
             if answer_format is not None:
-                final = await self._decide(state, answer_format, model, kwargs)
+                final = await self._decide(state, answer_format, model, media, kwargs)
                 return LLMResponse(
                     content=None,
                     tool_calls=[],
@@ -218,14 +231,27 @@ class DecisionProvider:
             raw=result,
         )
 
+    async def _collect_media(self, messages: list[Message]) -> list[MediaBlock] | None:
+        if self._turn_input is None:
+            return None
+        blocks = self._turn_input(messages)
+        if inspect.isawaitable(blocks):
+            blocks = await blocks
+        if blocks is None:
+            return None
+        return list(blocks)
+
     async def _decide(
         self,
         state: dict[str, Any],
         questions: dict[str, Question],
         model: str,
+        media: list[MediaBlock] | None,
         kwargs: dict[str, Any],
     ) -> Any:
-        return await self._decision_model.decide(state, questions=questions, model=model, **kwargs)
+        return await self._decision_model.decide(
+            state, questions=questions, model=model, media=media, **kwargs
+        )
 
     def _iteration_questions(self, tools: list[Tool]) -> dict[str, Question]:
         questions: dict[str, Question] = {

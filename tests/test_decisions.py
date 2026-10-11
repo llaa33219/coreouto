@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from typing import Any, Literal
 
@@ -371,6 +372,120 @@ async def test_agent_as_tool_without_answer_format_returns_content():
 
     tool = agent_as_tool("sub")
     assert await tool.handler(task="do it") == "sub answer"
+
+
+# --- bridge: per-turn multimodal input (turn_input) ---------------------------
+
+
+async def test_turn_input_supplies_media_every_iteration():
+    from coreouto._types import ImageBlock
+
+    @register_tool("click_button")
+    def click_button() -> str:
+        """Click the button."""
+        return "clicked"
+
+    captures = []
+
+    def screenshot(messages: list) -> list:
+        captures.append(len(messages))
+        return [ImageBlock(data=b"png-bytes", mime_type="image/png")]
+
+    dm = MockDecisionModel(
+        [
+            _iteration_result(0.1, "click_button"),
+            _iteration_result(0.99, "click_button"),
+            DecisionResult(answers={"done": _choice("yes")}),
+        ]
+    )
+    register_provider("jev", DecisionProvider(dm, turn_input=screenshot))
+    agent = Agent(AgentConfig(name="t", model="clef", provider="jev", tools=["click_button"]))
+    response = await agent.call(
+        "finish the task on screen",
+        answer_format={"done": ChoiceQuestion(instructions="done?", criteria={"yes": "y"})},
+    )
+
+    assert response.answer.answers["done"].choice == "yes"
+    # media reached every decide() call: 2 loop iterations + 1 answer phase
+    assert len(dm.calls) == 3
+    for call in dm.calls:
+        media = call["kwargs"]["media"]
+        assert len(media) == 1 and media[0].data == b"png-bytes"
+    # the callback saw a growing transcript
+    assert captures[1] > captures[0]
+
+
+async def test_turn_input_may_be_async_and_may_return_none():
+    async def no_capture(messages: list) -> None:
+        return None
+
+    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
+    register_provider("jev", DecisionProvider(dm, turn_input=no_capture))
+    agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
+    response = await agent.call(
+        "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+    )
+    assert response.answer.answers["v"].choice == "x"
+    assert dm.calls[0]["kwargs"]["media"] is None
+
+
+async def test_without_turn_input_media_is_none():
+    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
+    agent = _make_agent(dm)
+    await agent.call(
+        "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+    )
+    assert dm.calls[0]["kwargs"]["media"] is None
+
+
+async def test_typesafe_media_becomes_data_uri_extra_body():
+    ts = pytest.importorskip("typesafe_sdk")
+    from coreouto._types import AudioBlock, ImageBlock
+    from coreouto.decisions.typesafe import TypeSafeDecisionModel
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.seen: dict[str, Any] = {}
+
+        async def system_one(self, state, questions, *, model=None, **kwargs):
+            self.seen = kwargs
+            return ts.SystemOneResponse(
+                model="clef",
+                usage=ts.Usage(input_tokens=100, output_tokens=None),
+                answers={"n": ts.NoulAnswer(type="noul", noul=0.5)},
+            )
+
+    client = FakeClient()
+    dm = TypeSafeDecisionModel(client=client)
+    await dm.decide(
+        "state",
+        questions={"n": NoulQuestion(instructions="?")},
+        model="clef",
+        media=[
+            ImageBlock(data=b"\x89PNG", mime_type="image/png"),
+            AudioBlock(data=b"RIFF", mime_type="audio/mpeg"),
+        ],
+    )
+
+    extra_body = client.seen["extra_body"]
+    expected_png = "data:image/png;base64," + base64.b64encode(b"\x89PNG").decode()
+    assert extra_body["images"] == [expected_png]
+    assert extra_body["audio"] == ["data:audio/mpeg;base64,UklGRg=="]
+
+
+async def test_typesafe_media_rejects_remote_urls():
+    pytest.importorskip("typesafe_sdk")
+    from coreouto._types import ImageBlock
+    from coreouto.decisions.typesafe import TypeSafeDecisionModel
+
+    dm = TypeSafeDecisionModel(client=object())
+    with pytest.raises(ValueError, match="do not accept remote media URLs"):
+        await dm.decide(
+            "state",
+            questions={"n": NoulQuestion(instructions="?")},
+            model="clef",
+            media=[ImageBlock(url="https://example.com/shot.png")],
+        )
 
 
 # --- typesafe implementation (SDK mapping, no real API calls) -----------------

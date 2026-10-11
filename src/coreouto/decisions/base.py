@@ -13,7 +13,12 @@ from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from coreouto._types import Usage
+from coreouto._types import AudioBlock, ImageBlock, Usage, VideoBlock
+
+# Multimodal input a decision model can score alongside the state (e.g.
+# screenshots of the current screen). TextBlock/DocumentBlock are excluded:
+# text belongs in `state`.
+MediaBlock = ImageBlock | AudioBlock | VideoBlock
 
 
 class NoulQuestion(BaseModel):
@@ -122,5 +127,6 @@ class DecisionModel(Protocol):
         *,
         questions: dict[str, Question],
         model: str,
+        media: list[MediaBlock] | None = None,
         **kwargs: Any,
     ) -> DecisionResult: ...

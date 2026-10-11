@@ -5,14 +5,16 @@ Install with: pip install coreouto[typesafe]
 
 from __future__ import annotations
 
+import base64
 from typing import Any
 
-from coreouto._types import Usage
+from coreouto._types import AudioBlock, ImageBlock, Usage, VideoBlock
 from coreouto.decisions import register_decision_model
 from coreouto.decisions.base import (
     ChoiceAnswer,
     ChoiceQuestion,
     DecisionResult,
+    MediaBlock,
     NoulAnswer,
     NoulQuestion,
     Question,
@@ -55,6 +57,28 @@ def _from_sdk_answer(answer: Any) -> NoulAnswer | ChoiceAnswer | ScoreAnswer:
     raise TypeError(f"unsupported answer type: {answer.type!r}")
 
 
+def _media_to_extra_body(blocks: list[MediaBlock]) -> dict[str, list[str]]:
+    """Encode media blocks as base64 data URIs in the request body fields
+    typesafe-compatible multimodal endpoints (e.g. Cloudflare Clef) define:
+    `images`, `audio`, `videos` — siblings of `state`, not part of it.
+    """
+    body: dict[str, list[str]] = {}
+    targets = ((ImageBlock, "images"), (AudioBlock, "audio"), (VideoBlock, "videos"))
+    for block in blocks:
+        if block.url is not None:
+            raise ValueError(
+                "typesafe-compatible endpoints do not accept remote media URLs — "
+                "pass raw bytes instead (e.g. ImageBlock(data=..., mime_type=...))"
+            )
+        assert block.data is not None and block.mime_type is not None
+        data_uri = f"data:{block.mime_type};base64,{base64.b64encode(block.data).decode()}"
+        for block_type, field in targets:
+            if isinstance(block, block_type):
+                body.setdefault(field, []).append(data_uri)
+                break
+    return body
+
+
 class TypeSafeDecisionModel:
     """DecisionModel backed by TypeSafe AI's System One endpoint (Jev)."""
 
@@ -86,9 +110,13 @@ class TypeSafeDecisionModel:
         *,
         questions: dict[str, Question],
         model: str,
+        media: list[MediaBlock] | None = None,
         **kwargs: Any,
     ) -> DecisionResult:
         sdk_questions = {key: _to_sdk_question(q) for key, q in questions.items()}
+        if media:
+            extra_body = {**_media_to_extra_body(media), **kwargs.pop("extra_body", {})}
+            kwargs["extra_body"] = extra_body
         resp = await self._client.system_one(state, sdk_questions, model=model, **kwargs)
 
         answers = {key: _from_sdk_answer(a) for key, a in resp.answers.items()}
