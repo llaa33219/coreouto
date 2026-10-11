@@ -43,6 +43,7 @@ pip install coreouto
 pip install coreouto[openai]
 pip install coreouto[anthropic]
 pip install coreouto[google]
+pip install coreouto[typesafe]
 pip install coreouto[all]
 ```
 
@@ -58,6 +59,7 @@ See [`docs/`](./docs/) for the full documentation set:
 - [Presets](./docs/presets.md)
 - [Hooks](./docs/hooks.md)
 - [Multi-agent](./docs/multi-agent.md)
+- [Decision models](./docs/decisions.md) — loops driven by decisions, not text
 - [System prompts](./docs/prompts.md) — the default prompt and how to write your own
 
 ## License
