@@ -39,10 +39,12 @@ dev = [
 openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.18"]
 google = ["google-genai>=1.0"]
+typesafe = ["typesafe-sdk>=0.7"]
 all = [
     "openai>=1.0",
     "anthropic>=0.18",
     "google-genai>=1.0",
+    "typesafe-sdk>=0.7",
 ]
 
 [project.urls]
