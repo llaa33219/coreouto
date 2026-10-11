@@ -137,6 +137,45 @@ class MockProvider:
         )
 
 
+class MockDecisionModel:
+    """Decision model that yields scripted DecisionResults, recording every call.
+
+    The decision-side counterpart of MockProvider: each `decide()` call pops
+    the next scripted `DecisionResult` and records the state/questions/model
+    it received, so tests can assert exactly what the agent loop asked.
+    """
+
+    def __init__(self, results: list[Any] | None = None) -> None:
+        self._results: list[Any] = list(results or [])
+        self.calls: list[dict[str, Any]] = []
+
+    def queue(self, *results: Any) -> None:
+        self._results.extend(results)
+
+    async def decide(
+        self,
+        state: Any,
+        *,
+        questions: dict[str, Any],
+        model: str,
+        **kwargs: Any,
+    ) -> Any:
+        self.calls.append(
+            {
+                "state": state,
+                "questions": dict(questions),
+                "model": model,
+                "kwargs": kwargs,
+            }
+        )
+        if not self._results:
+            raise AssertionError(
+                f"MockDecisionModel exhausted: requested result #{len(self.calls)} "
+                f"but only {len(self.calls) - 1} results were queued."
+            )
+        return self._results.pop(0)
+
+
 class HookRecorder:
     """Records every hook invocation in order."""
 
