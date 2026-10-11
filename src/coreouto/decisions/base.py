@@ -17,7 +17,7 @@ from coreouto._types import Usage
 
 
 class NoulQuestion(BaseModel):
-    """A yes/no question, answered as a probability of "yes" (0.0–1.0)."""
+    """A yes/no question, answered as a probability of "yes" (0.0-1.0)."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

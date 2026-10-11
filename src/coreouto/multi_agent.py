@@ -11,6 +11,7 @@ directly to `AgentConfig(tools=[...])` or by wrapping it with
 from __future__ import annotations
 
 from coreouto.agent import Agent
+from coreouto.decisions.base import AnswerFormat, DecisionResult
 from coreouto.presets import get_agent_preset
 from coreouto.tools import Tool
 
@@ -55,6 +56,7 @@ def agent_as_tool(
     *,
     name: str | None = None,
     description: str | None = None,
+    answer_format: AnswerFormat | None = None,
 ) -> Tool:
     preset = get_agent_preset(preset_name)
     config = preset.to_config()
@@ -68,7 +70,12 @@ def agent_as_tool(
     )
 
     async def handler(task: str) -> str:
-        return (await agent.call(task)).content
+        response = await agent.call(task, answer_format=answer_format)
+        if isinstance(response.answer, DecisionResult):
+            # The sub-agent answered in the requested format (decision
+            # provider): the typed selections become the tool result.
+            return response.answer.answers_json()
+        return response.content
 
     return Tool(
         name=tool_name,

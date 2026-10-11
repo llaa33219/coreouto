@@ -19,6 +19,7 @@ from coreouto._types import (
     Usage,
     VideoBlock,
 )
+from coreouto.decisions.base import AnswerFormat
 from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
@@ -247,10 +248,13 @@ class Agent:
         *,
         override: AgentConfig | None = None,
         history: list[Message] | None = None,
+        answer_format: AnswerFormat | None = None,
     ) -> Response:
         from coreouto import sync
 
-        return sync.call_sync(self, user_message, override=override, history=history)
+        return sync.call_sync(
+            self, user_message, override=override, history=history, answer_format=answer_format
+        )
 
     async def call(
         self,
@@ -258,9 +262,18 @@ class Agent:
         *,
         override: AgentConfig | None = None,
         history: list[Message] | None = None,
+        answer_format: AnswerFormat | None = None,
     ) -> Response:
         cfg = override or self.config
         provider = get_provider(cfg.provider)
+
+        if answer_format is not None and not getattr(provider, "supports_answer_format", False):
+            raise ValueError(
+                f"provider {cfg.provider!r} does not support answer_format. "
+                "answer_format constrains the final answer to typed selections; "
+                "it is supported by decision providers "
+                "(coreouto.decisions.bridge.DecisionProvider)."
+            )
 
         resolved_tools: list[Tool] = []
         for name in cfg.tools:
@@ -325,6 +338,8 @@ class Agent:
             normalized = normalize_provider_config(cfg.provider, cfg.provider_config)
             merged = {**normalized, **cfg.provider_passthrough}
             extra_kwargs = {"system_prompt": None, **merged}
+            if answer_format is not None:
+                extra_kwargs["answer_format"] = answer_format
             if hasattr(provider, "_stream"):
                 extra_kwargs["_on_stream_text"] = _on_stream_text
                 extra_kwargs["_on_stream_thinking"] = _on_stream_thinking
@@ -494,6 +509,25 @@ class Agent:
                         iterations=iterations,
                         usage=all_usage,
                         stop_reason=stop_reason,
+                    )
+                if response.stop_reason == "finish":
+                    # Provider-declared finish with no text — decision providers
+                    # end the loop this way. Nothing is synthesized: content
+                    # stays empty and any structured answer rides on
+                    # Response.answer.
+                    await trigger(
+                        ON_FINISH,
+                        content="",
+                        messages=messages,
+                        iterations=iterations,
+                    )
+                    return Response(
+                        content="",
+                        messages=messages,
+                        iterations=iterations,
+                        usage=all_usage,
+                        stop_reason="finish",
+                        answer=response.answer,
                     )
                 # No content and no tool calls (e.g. a thinking-only turn, or
                 # an otherwise empty response). The model produced neither an

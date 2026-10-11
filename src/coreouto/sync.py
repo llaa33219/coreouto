@@ -16,11 +16,16 @@ def call_sync(
     *,
     override=None,
     history: list[Message] | None = None,
+    answer_format=None,
 ) -> Response:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(agent.call(user_message, override=override, history=history))
+        return asyncio.run(
+            agent.call(
+                user_message, override=override, history=history, answer_format=answer_format
+            )
+        )
     raise RuntimeError(
         "call_sync() cannot be used inside a running event loop. "
         "Use 'await agent.call(...)' instead."
