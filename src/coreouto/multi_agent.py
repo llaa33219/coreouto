@@ -11,8 +11,8 @@ directly to `AgentConfig(tools=[...])` or by wrapping it with
 from __future__ import annotations
 
 from coreouto.agent import Agent
-from coreouto.decisions.base import AnswerFormat, DecisionResult
 from coreouto.presets import get_agent_preset
+from coreouto.systemone.base import AnswerFormat, SystemOneResult
 from coreouto.tools import Tool
 
 _DEFAULT_DESCRIPTION_TEMPLATE = (
@@ -71,8 +71,8 @@ def agent_as_tool(
 
     async def handler(task: str) -> str:
         response = await agent.call(task, answer_format=answer_format)
-        if isinstance(response.answer, DecisionResult):
-            # The sub-agent answered in the requested format (decision
+        if isinstance(response.answer, SystemOneResult):
+            # The sub-agent answered in the requested format (System One
             # provider): the typed selections become the tool result.
             return response.answer.answers_json()
         return response.content

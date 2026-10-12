@@ -218,8 +218,8 @@ class LLMResponse(BaseModel):
     stop_reason: str | None = None
     thinking: str | None = None
     # Structured final answer, set only by providers that select a typed
-    # answer (decision providers) instead of generating text. A
-    # `coreouto.decisions.DecisionResult` when set; `None` for chat providers.
+    # answer (System One providers) instead of generating text. A
+    # `coreouto.systemone.SystemOneResult` when set; `None` for chat providers.
     answer: Any | None = None
     raw: Any | None = None
 
@@ -270,8 +270,8 @@ class Response(BaseModel):
     usage: list[Usage] = Field(default_factory=list)
     stop_reason: StopReason = "finish"
     # Structured final answer, set only when the provider ran an
-    # answer-format selection phase (decision providers called with
-    # `answer_format`). A `coreouto.decisions.DecisionResult` when set;
+    # answer-format selection phase (System One providers called with
+    # `answer_format`). A `coreouto.systemone.SystemOneResult` when set;
     # `None` otherwise. Never synthesized — when no answer format was
     # requested this stays None and `content` may be empty.
     answer: Any | None = None

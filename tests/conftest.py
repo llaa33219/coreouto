@@ -137,11 +137,11 @@ class MockProvider:
         )
 
 
-class MockDecisionModel:
-    """Decision model that yields scripted DecisionResults, recording every call.
+class MockSystemOneModel:
+    """System One model that yields scripted SystemOneResults, recording every call.
 
-    The decision-side counterpart of MockProvider: each `decide()` call pops
-    the next scripted `DecisionResult` and records the state/questions/model
+    The System One-side counterpart of MockProvider: each `decide()` call pops
+    the next scripted `SystemOneResult` and records the state/questions/model
     it received, so tests can assert exactly what the agent loop asked.
     """
 
@@ -170,7 +170,7 @@ class MockDecisionModel:
         )
         if not self._results:
             raise AssertionError(
-                f"MockDecisionModel exhausted: requested result #{len(self.calls)} "
+                f"MockSystemOneModel exhausted: requested result #{len(self.calls)} "
                 f"but only {len(self.calls) - 1} results were queued."
             )
         return self._results.pop(0)

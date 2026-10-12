@@ -22,24 +22,6 @@ from coreouto._types import (
 )
 from coreouto._version import __version__
 from coreouto.agent import Agent, MaxIterationsError
-from coreouto.decisions import (
-    Answer,
-    AnswerFormat,
-    ChoiceAnswer,
-    ChoiceQuestion,
-    DecisionModel,
-    DecisionResult,
-    NoulAnswer,
-    NoulQuestion,
-    Question,
-    ScoreAnswer,
-    ScoreQuestion,
-    available_decision_models,
-    clear_decision_models,
-    get_decision_model,
-    register_decision_model,
-)
-from coreouto.decisions.bridge import DecisionProvider
 from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
@@ -75,6 +57,24 @@ from coreouto.providers import (
 )
 from coreouto.settings import CANONICAL_SETTINGS, normalize_provider_config
 from coreouto.sync import call_sync
+from coreouto.systemone import (
+    Answer,
+    AnswerFormat,
+    ChoiceAnswer,
+    ChoiceQuestion,
+    NoulAnswer,
+    NoulQuestion,
+    Question,
+    ScoreAnswer,
+    ScoreQuestion,
+    SystemOneModel,
+    SystemOneResult,
+    available_systemone_models,
+    clear_systemone_models,
+    get_systemone_model,
+    register_systemone_model,
+)
+from coreouto.systemone.bridge import SystemOneProvider
 from coreouto.tools import (
     RESERVED_TOOL_NAMES,
     Tool,
@@ -111,9 +111,6 @@ __all__ = [
     "ChoiceAnswer",
     "ChoiceQuestion",
     "ContentBlock",
-    "DecisionModel",
-    "DecisionProvider",
-    "DecisionResult",
     "DocumentBlock",
     "ErrorRule",
     "ImageBlock",
@@ -127,6 +124,9 @@ __all__ = [
     "ScoreAnswer",
     "ScoreQuestion",
     "StopReason",
+    "SystemOneModel",
+    "SystemOneProvider",
+    "SystemOneResult",
     "TextBlock",
     "Tool",
     "ToolCall",
@@ -135,27 +135,27 @@ __all__ = [
     "VideoBlock",
     "__version__",
     "agent_as_tool",
-    "available_decision_models",
     "available_providers",
+    "available_systemone_models",
     "call_sync",
     "clear_agent_presets",
-    "clear_decision_models",
     "clear_hooks",
     "clear_providers",
+    "clear_systemone_models",
     "clear_tools",
     "get_agent_preset",
-    "get_decision_model",
     "get_hooks",
     "get_provider",
+    "get_systemone_model",
     "get_tool",
     "list_agent_presets",
     "list_tools",
     "make_delegate_tool",
     "normalize_provider_config",
     "register_agent_preset",
-    "register_decision_model",
     "register_hook",
     "register_provider",
+    "register_systemone_model",
     "register_tool",
     "register_tool_class",
 ]

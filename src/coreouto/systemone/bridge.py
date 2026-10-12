@@ -1,6 +1,6 @@
-"""DecisionProvider — drives the agent loop with a decision model.
+"""SystemOneProvider — drives the agent loop with a System One model.
 
-Wraps a `DecisionModel` in the Provider protocol so `Agent` can run on it.
+Wraps a `SystemOneModel` in the Provider protocol so `Agent` can run on it.
 Each loop iteration asks the model whether the goal is complete and, if not,
 which tool to call next. Tools are selected, never authored: every tool
 parameter must be enumerable (JSON-schema `enum`) so it can be posed as a
@@ -26,19 +26,19 @@ from coreouto._types import (
     ToolResult,
     VideoBlock,
 )
-from coreouto.decisions import get_decision_model
-from coreouto.decisions.base import (
+from coreouto.hooks import BEFORE_TURN_INPUT, ON_GOAL_COMPLETE, ON_TURN_INPUT, trigger
+from coreouto.systemone import get_systemone_model
+from coreouto.systemone.base import (
     AnswerFormat,
     ChoiceAnswer,
     ChoiceQuestion,
-    DecisionModel,
     MediaBlock,
     NoulAnswer,
     NoulQuestion,
     Question,
+    SystemOneModel,
     TurnBlock,
 )
-from coreouto.hooks import BEFORE_TURN_INPUT, ON_GOAL_COMPLETE, ON_TURN_INPUT, trigger
 from coreouto.tools import Tool
 
 # Called once per loop iteration with the current transcript; returns this
@@ -74,7 +74,7 @@ def _arg_key(tool_name: str, param_name: str) -> str:
 
 
 def _build_state(messages: list[Message], system_prompt: str | None) -> dict[str, Any]:
-    """Serialize the transcript into a JSON-safe state for the decision model.
+    """Serialize the transcript into a JSON-safe state for the System One model.
 
     - goal: the system prompt plus the first user message (the request).
     - history: one entry per prior step — user injections, tool selections
@@ -103,9 +103,7 @@ def _build_state(messages: list[Message], system_prompt: str | None) -> dict[str
                 history.append({"role": "user", "content": text})
         elif m.role == "assistant":
             for tc in m.tool_calls or []:
-                history.append(
-                    {"decision": "call_tool", "tool": tc.name, "arguments": tc.arguments}
-                )
+                history.append({"action": "call_tool", "tool": tc.name, "arguments": tc.arguments})
         elif m.role == "tool":
             entry = {"tool": m.name, "result": m.content}
             history.append({"tool_result": entry})
@@ -115,7 +113,7 @@ def _build_state(messages: list[Message], system_prompt: str | None) -> dict[str
 
 
 def _validate_tools(tools: list[Tool]) -> None:
-    """Reject tools the decision model cannot drive: any required parameter
+    """Reject tools the System One model cannot drive: any required parameter
     without an `enum` demands free-form input the model cannot produce.
     Optional non-enum parameters are omitted (their defaults apply).
     """
@@ -126,9 +124,9 @@ def _validate_tools(tools: list[Tool]) -> None:
         for param_name, param_schema in properties.items():
             if "enum" not in param_schema and param_name in required:
                 raise ValueError(
-                    f"tool {tool.name!r} is incompatible with decision providers: "
+                    f"tool {tool.name!r} is incompatible with System One providers: "
                     f"parameter {param_name!r} requires free-form input (no enum). "
-                    f"Decision models can only select among enumerated options — "
+                    f"System One models can only select among enumerated options — "
                     f"give the parameter an enum (e.g. a Literal type) or a default."
                 )
 
@@ -153,8 +151,8 @@ def _coerce_enum_value(selected: str, param_schema: dict[str, Any]) -> Any:
     return selected
 
 
-class DecisionProvider:
-    """Provider protocol implementation backed by a DecisionModel.
+class SystemOneProvider:
+    """Provider protocol implementation backed by a SystemOneModel.
 
     Loop semantics per iteration:
     - With tools: ask `goal_complete` (noul) + `next_tool` (choice) + one
@@ -171,14 +169,14 @@ class DecisionProvider:
 
     def __init__(
         self,
-        decision_model: DecisionModel | str,
+        systemone_model: SystemOneModel | str,
         *,
         error_handling: list | None = None,
         turn_input: TurnInput | None = None,
     ) -> None:
-        if isinstance(decision_model, str):
-            decision_model = get_decision_model(decision_model)
-        self._decision_model = decision_model
+        if isinstance(systemone_model, str):
+            systemone_model = get_systemone_model(systemone_model)
+        self._systemone_model = systemone_model
         self.error_handling = error_handling
         self._turn_input = turn_input
 
@@ -203,7 +201,7 @@ class DecisionProvider:
             # Single-answer mode: no goal detection, answer immediately.
             if answer_format is None:
                 raise ValueError(
-                    "a decision provider with no tools can only answer typed "
+                    "a System One provider with no tools can only answer typed "
                     "questions — pass answer_format to Agent.call()."
                 )
             result = await self._decide(state, answer_format, model, media, kwargs)
@@ -284,7 +282,7 @@ class DecisionProvider:
         media: list[MediaBlock] | None,
         kwargs: dict[str, Any],
     ) -> Any:
-        return await self._decision_model.decide(
+        return await self._systemone_model.decide(
             state, questions=questions, model=model, media=media, **kwargs
         )
 
@@ -316,13 +314,13 @@ class DecisionProvider:
         answer = result.answers.get(NEXT_TOOL_KEY)
         if not isinstance(answer, ChoiceAnswer):
             raise ValueError(
-                f"decision model did not answer {NEXT_TOOL_KEY!r} as a choice; got: {answer!r}"
+                f"System One model did not answer {NEXT_TOOL_KEY!r} as a choice; got: {answer!r}"
             )
         chosen = answer.choice
         tool_by_name = {t.name: t for t in tools}
         if chosen not in tool_by_name:
             raise ValueError(
-                f"decision model selected unknown tool {chosen!r}. "
+                f"System One model selected unknown tool {chosen!r}. "
                 f"available: {sorted(tool_by_name)}"
             )
         tool = tool_by_name[chosen]
@@ -335,7 +333,7 @@ class DecisionProvider:
                 if isinstance(arg_answer, ChoiceAnswer):
                     arguments[param_name] = _coerce_enum_value(arg_answer.choice, param_schema)
         return ToolCall(
-            id=f"decision_{uuid.uuid4().hex[:12]}",
+            id=f"systemone_{uuid.uuid4().hex[:12]}",
             name=chosen,
             arguments=arguments,
         )

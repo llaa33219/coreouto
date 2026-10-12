@@ -1,14 +1,14 @@
-"""Example 31: A screen-watching decision agent (multimodal turn input).
+"""Example 31: A screen-watching System One agent (multimodal turn input).
 
-Clef (Cloudflare) and other multimodal decision models score images alongside
-the state. `DecisionProvider(turn_input=...)` calls your callback every loop
+Clef (Cloudflare) and other multimodal System One models score images alongside
+the state. `SystemOneProvider(turn_input=...)` calls your callback every loop
 iteration, so the model always decides on the *current* screen. The callback
 receives the transcript and returns content blocks (or None); sync or async.
 
 Run with:
     export TYPESAFE_API_KEY=...
     export TYPESAFE_BASE_URL=https://api.cloudflare.com/client/v4/accounts/<acct>/ai/v1
-    python examples/31_decision_multimodal.py
+    python examples/31_systemone_multimodal.py
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 import coreouto as co
-from coreouto.decisions.typesafe import register as register_typesafe
+from coreouto.systemone.typesafe import register as register_typesafe
 
 
 @co.register_tool("click_ok")
@@ -48,7 +48,7 @@ async def main() -> None:
     register_typesafe(api_key=os.environ["TYPESAFE_API_KEY"])
     co.register_provider(
         "clef",
-        co.DecisionProvider("typesafe", turn_input=current_screen),
+        co.SystemOneProvider("typesafe", turn_input=current_screen),
     )
 
     preset = co.register_agent_preset(

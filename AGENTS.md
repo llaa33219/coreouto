@@ -29,6 +29,11 @@ src/coreouto/
   sync.py            # call_sync() — fails loudly if a loop is running
   contrib/
     hooks.py         # 5 opt-in hook recipes
+  systemone/
+    base.py          # SystemOneModel protocol (1 method: decide), question/answer types
+    __init__.py      # string-keyed System One model registry
+    bridge.py        # SystemOneProvider — drives the agent loop via typed selections
+    typesafe.py      # TypeSafe AI (Jev) implementation, also covers Clef-class models
   providers/
     base.py          # Provider protocol (3 methods)
     __init__.py      # string-keyed registry

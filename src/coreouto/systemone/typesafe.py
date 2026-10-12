@@ -1,4 +1,4 @@
-"""TypeSafe AI (Jev) decision model, wrapping the official typesafe-sdk.
+"""TypeSafe AI (Jev) System One model, wrapping the official typesafe-sdk.
 
 Install with: pip install coreouto[typesafe]
 """
@@ -9,17 +9,17 @@ import base64
 from typing import Any
 
 from coreouto._types import AudioBlock, ImageBlock, Usage, VideoBlock
-from coreouto.decisions import register_decision_model
-from coreouto.decisions.base import (
+from coreouto.systemone import register_systemone_model
+from coreouto.systemone.base import (
     ChoiceAnswer,
     ChoiceQuestion,
-    DecisionResult,
     MediaBlock,
     NoulAnswer,
     NoulQuestion,
     Question,
     ScoreAnswer,
     ScoreQuestion,
+    SystemOneResult,
 )
 
 try:
@@ -79,8 +79,8 @@ def _media_to_extra_body(blocks: list[MediaBlock]) -> dict[str, list[str]]:
     return body
 
 
-class TypeSafeDecisionModel:
-    """DecisionModel backed by TypeSafe AI's System One endpoint (Jev)."""
+class TypeSafeSystemOneModel:
+    """SystemOneModel backed by TypeSafe AI's System One endpoint (Jev)."""
 
     def __init__(
         self,
@@ -112,7 +112,7 @@ class TypeSafeDecisionModel:
         model: str,
         media: list[MediaBlock] | None = None,
         **kwargs: Any,
-    ) -> DecisionResult:
+    ) -> SystemOneResult:
         sdk_questions = {key: _to_sdk_question(q) for key, q in questions.items()}
         if media:
             extra_body = {**_media_to_extra_body(media), **kwargs.pop("extra_body", {})}
@@ -131,7 +131,7 @@ class TypeSafeDecisionModel:
                 total_tokens=prompt + completion,
             )
 
-        return DecisionResult(answers=answers, model=resp.model, usage=usage, raw=resp)
+        return SystemOneResult(answers=answers, model=resp.model, usage=usage, raw=resp)
 
 
 def register(
@@ -140,6 +140,6 @@ def register(
     name: str = "typesafe",
     timeout: float | None = None,
 ) -> None:
-    register_decision_model(
-        name, TypeSafeDecisionModel(api_key=api_key, base_url=base_url, timeout=timeout)
+    register_systemone_model(
+        name, TypeSafeSystemOneModel(api_key=api_key, base_url=base_url, timeout=timeout)
     )

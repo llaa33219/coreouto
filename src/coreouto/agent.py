@@ -19,7 +19,6 @@ from coreouto._types import (
     Usage,
     VideoBlock,
 )
-from coreouto.decisions.base import AnswerFormat
 from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
@@ -36,6 +35,7 @@ from coreouto.hooks import (
 )
 from coreouto.providers import get_provider
 from coreouto.settings import normalize_provider_config
+from coreouto.systemone.base import AnswerFormat
 from coreouto.tools import Tool, get_tool
 
 _CONTENT_BLOCK_TYPES = (TextBlock, ImageBlock, DocumentBlock, VideoBlock, AudioBlock)
@@ -271,8 +271,8 @@ class Agent:
             raise ValueError(
                 f"provider {cfg.provider!r} does not support answer_format. "
                 "answer_format constrains the final answer to typed selections; "
-                "it is supported by decision providers "
-                "(coreouto.decisions.bridge.DecisionProvider)."
+                "it is supported by System One providers "
+                "(coreouto.systemone.bridge.SystemOneProvider)."
             )
 
         resolved_tools: list[Tool] = []
@@ -511,7 +511,7 @@ class Agent:
                         stop_reason=stop_reason,
                     )
                 if response.stop_reason == "finish":
-                    # Provider-declared finish with no text — decision providers
+                    # Provider-declared finish with no text — System One providers
                     # end the loop this way. Nothing is synthesized: content
                     # stays empty and any structured answer rides on
                     # Response.answer.

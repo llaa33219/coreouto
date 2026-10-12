@@ -1,14 +1,14 @@
-"""Example 32: Hooks on a decision-driven agent.
+"""Example 32: Hooks on a System One-driven agent.
 
-Decision providers fire three extra events — before_turn_input (observe),
+System One providers fire three extra events — before_turn_input (observe),
 on_turn_input (inspect and modify the collected blocks in place), and
 on_goal_complete (intercept the completion declaration before the
-answer-selection phase). Per-turn decision results ride the existing
-after_llm_call event; decision_collection_hook gathers them for you.
+answer-selection phase). Per-turn System One results ride the existing
+after_llm_call event; systemone_collection_hook gathers them for you.
 
 Run with:
     export TYPESAFE_API_KEY=...
-    python examples/32_decision_hooks.py
+    python examples/32_systemone_hooks.py
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from __future__ import annotations
 import os
 
 import coreouto as co
-from coreouto.contrib.hooks import decision_collection_hook
-from coreouto.decisions.typesafe import register as register_typesafe
+from coreouto.contrib.hooks import systemone_collection_hook
+from coreouto.systemone.typesafe import register as register_typesafe
 
 
 @co.register_tool("click_ok")
@@ -51,11 +51,11 @@ async def main() -> None:
     register_typesafe(api_key=os.environ["TYPESAFE_API_KEY"])
     co.register_provider(
         "clef",
-        co.DecisionProvider("typesafe", turn_input=current_screen),
+        co.SystemOneProvider("typesafe", turn_input=current_screen),
     )
 
-    # collect every per-turn decision (goal probability, tool selection)
-    collect, decisions = decision_collection_hook()
+    # collect every per-turn result (goal probability, tool selection)
+    collect, results = systemone_collection_hook()
     co.register_hook(co.AFTER_LLM_CALL, collect)
 
     # modify the turn input in place: drop the screenshot when privacy mode is on
@@ -69,7 +69,7 @@ async def main() -> None:
     co.register_hook(co.ON_TURN_INPUT, maybe_redact)
 
     # intercept the completion declaration before the answer phase
-    def log_completion(state: dict, result: co.DecisionResult, **_kwargs) -> None:
+    def log_completion(state: dict, result: co.SystemOneResult, **_kwargs) -> None:
         probability = result.answers["goal_complete"].noul
         print(f"goal declared complete (p={probability:.2f}); running answer selection")
 
@@ -93,7 +93,7 @@ async def main() -> None:
     )
 
     print("dialog gone probability:", response.answer.answers["dialog_gone"].noul)
-    print(f"decisions made: {len(decisions)}")
+    print(f"results collected: {len(results)}")
 
 
 if __name__ == "__main__":

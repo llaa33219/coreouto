@@ -1,6 +1,6 @@
-"""Decision-model abstraction.
+"""System One model abstraction.
 
-A decision model does not generate text. Given a `state` and a set of typed
+A System One model does not generate text. Given a `state` and a set of typed
 `questions`, it returns typed answers with calibrated probabilities. coreouto
 uses this to drive the agent loop by *deciding* — whether the goal is
 complete, which tool to call next, which enumerated argument value to pick —
@@ -15,7 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from coreouto._types import AudioBlock, ImageBlock, TextBlock, Usage, VideoBlock
 
-# Multimodal input a decision model can score alongside the state (e.g.
+# Multimodal input a System One model can score alongside the state (e.g.
 # screenshots of the current screen). TextBlock/DocumentBlock are excluded:
 # text belongs in `state`.
 MediaBlock = ImageBlock | AudioBlock | VideoBlock
@@ -97,8 +97,8 @@ Answer = Annotated[
 ]
 
 
-class DecisionResult(BaseModel):
-    """The outcome of one `DecisionModel.decide()` call."""
+class SystemOneResult(BaseModel):
+    """The outcome of one `SystemOneModel.decide()` call."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -118,12 +118,12 @@ class DecisionResult(BaseModel):
 
 
 @runtime_checkable
-class DecisionModel(Protocol):
-    """A decision model: one method, no text generation, no tool calls.
+class SystemOneModel(Protocol):
+    """A System One model: one method, no text generation, no tool calls.
 
-    Implementations wrap a vendor SDK (see `coreouto.decisions.typesafe`) and
-    are registered by name with `register_decision_model`. To drive an agent
-    loop with one, wrap it in `coreouto.decisions.bridge.DecisionProvider`.
+    Implementations wrap a vendor SDK (see `coreouto.systemone.typesafe`) and
+    are registered by name with `register_systemone_model`. To drive an agent
+    loop with one, wrap it in `coreouto.systemone.bridge.SystemOneProvider`.
     """
 
     async def decide(
@@ -134,4 +134,4 @@ class DecisionModel(Protocol):
         model: str,
         media: list[MediaBlock] | None = None,
         **kwargs: Any,
-    ) -> DecisionResult: ...
+    ) -> SystemOneResult: ...

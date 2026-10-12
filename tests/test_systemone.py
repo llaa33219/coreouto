@@ -1,4 +1,4 @@
-"""Tests for the decision-model abstraction and the DecisionProvider bridge."""
+"""Tests for the System One model abstraction and the SystemOneProvider bridge."""
 
 from __future__ import annotations
 
@@ -10,34 +10,34 @@ import pytest
 
 from coreouto import Agent, AgentConfig, Response, agent_as_tool, register_agent_preset
 from coreouto.agent import MaxIterationsError
-from coreouto.decisions import (
+from coreouto.providers import clear_providers, register_provider
+from coreouto.systemone import (
     ChoiceAnswer,
     ChoiceQuestion,
-    DecisionResult,
     NoulAnswer,
     NoulQuestion,
     ScoreAnswer,
     ScoreQuestion,
-    available_decision_models,
-    clear_decision_models,
-    get_decision_model,
-    register_decision_model,
+    SystemOneResult,
+    available_systemone_models,
+    clear_systemone_models,
+    get_systemone_model,
+    register_systemone_model,
 )
-from coreouto.decisions.bridge import GOAL_COMPLETE_KEY, NEXT_TOOL_KEY, DecisionProvider
-from coreouto.providers import clear_providers, register_provider
+from coreouto.systemone.bridge import GOAL_COMPLETE_KEY, NEXT_TOOL_KEY, SystemOneProvider
 from coreouto.tools import clear_tools, register_tool
-from tests.conftest import MockDecisionModel, MockLLMResponse, MockProvider
+from tests.conftest import MockLLMResponse, MockProvider, MockSystemOneModel
 
 
 @pytest.fixture(autouse=True)
 def _clean_state():
     clear_tools()
     clear_providers()
-    clear_decision_models()
+    clear_systemone_models()
     yield
     clear_tools()
     clear_providers()
-    clear_decision_models()
+    clear_systemone_models()
 
 
 def _noul(value: float) -> NoulAnswer:
@@ -48,8 +48,8 @@ def _choice(value: str) -> ChoiceAnswer:
     return ChoiceAnswer(choice=value)
 
 
-def _iteration_result(complete: float, tool: str, **args: ChoiceAnswer) -> DecisionResult:
-    return DecisionResult(
+def _iteration_result(complete: float, tool: str, **args: ChoiceAnswer) -> SystemOneResult:
+    return SystemOneResult(
         answers={
             GOAL_COMPLETE_KEY: _noul(complete),
             NEXT_TOOL_KEY: _choice(tool),
@@ -59,13 +59,13 @@ def _iteration_result(complete: float, tool: str, **args: ChoiceAnswer) -> Decis
 
 
 def _make_agent(
-    dm: MockDecisionModel,
+    dm: MockSystemOneModel,
     *,
     tools: list[str] | None = None,
     provider_name: str = "jev",
     model: str = "jev-latest",
 ) -> Agent:
-    register_provider(provider_name, DecisionProvider(dm))
+    register_provider(provider_name, SystemOneProvider(dm))
     return Agent(
         AgentConfig(
             name="test",
@@ -79,23 +79,23 @@ def _make_agent(
 # --- registry ---------------------------------------------------------------
 
 
-def test_decision_model_registry_roundtrip():
-    dm = MockDecisionModel()
-    register_decision_model("mock", dm)
-    assert get_decision_model("mock") is dm
-    assert available_decision_models() == ["mock"]
+def test_systemone_model_registry_roundtrip():
+    dm = MockSystemOneModel()
+    register_systemone_model("mock", dm)
+    assert get_systemone_model("mock") is dm
+    assert available_systemone_models() == ["mock"]
 
 
-def test_decision_model_registry_missing_names_available():
-    with pytest.raises(KeyError, match="decision model not registered: 'nope'"):
-        get_decision_model("nope")
+def test_systemone_model_registry_missing_names_available():
+    with pytest.raises(KeyError, match="System One model not registered: 'nope'"):
+        get_systemone_model("nope")
 
 
-def test_decision_provider_accepts_registry_name():
-    dm = MockDecisionModel()
-    register_decision_model("mock", dm)
-    provider = DecisionProvider("mock")
-    assert provider._decision_model is dm
+def test_systemone_provider_accepts_registry_name():
+    dm = MockSystemOneModel()
+    register_systemone_model("mock", dm)
+    provider = SystemOneProvider("mock")
+    assert provider._systemone_model is dm
 
 
 # --- types ------------------------------------------------------------------
@@ -107,8 +107,8 @@ def test_question_types_are_discriminated():
     assert ScoreQuestion(instructions="?", criteria=["lo", "hi"]).type == "score"
 
 
-def test_decision_result_answers_json():
-    result = DecisionResult(
+def test_systemone_result_answers_json():
+    result = SystemOneResult(
         answers={
             "v": ChoiceAnswer(choice="x", probabilities={"x": 1.0}, confidence=0.9),
             "n": NoulAnswer(noul=0.3),
@@ -121,7 +121,7 @@ def test_decision_result_answers_json():
     assert parsed["s"]["score"] == 1.5
 
 
-# --- bridge: the agent loop driven by decisions ------------------------------
+# --- bridge: the agent loop driven by typed selections ------------------------------
 
 
 async def test_loop_runs_tool_then_finishes_empty_without_answer_format():
@@ -130,7 +130,7 @@ async def test_loop_runs_tool_then_finishes_empty_without_answer_format():
         """Get the deployment status."""
         return "all green"
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.1, "get_status"),
             _iteration_result(0.95, "get_status"),
@@ -156,7 +156,7 @@ async def test_state_carries_goal_history_and_current_situation():
         """Get the deployment status."""
         return "all green"
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.1, "get_status"),
             _iteration_result(0.99, "get_status"),
@@ -171,7 +171,7 @@ async def test_state_carries_goal_history_and_current_situation():
 
     second_state = dm.calls[1]["state"]
     assert second_state["history"][0] == {
-        "decision": "call_tool",
+        "action": "call_tool",
         "tool": "get_status",
         "arguments": {},
     }
@@ -184,7 +184,7 @@ async def test_iteration_questions_cover_goal_tool_and_enum_args():
         """Scale the deployment."""
         return f"scaled {direction}"
 
-    dm = MockDecisionModel([_iteration_result(0.9, "scale")])
+    dm = MockSystemOneModel([_iteration_result(0.9, "scale")])
     agent = _make_agent(dm, tools=["scale"])
     await agent.call("scale?")
 
@@ -202,7 +202,7 @@ async def test_enum_argument_is_selected_and_passed_to_the_tool():
         """Scale the deployment."""
         return f"scaled {direction}"
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.1, "scale", **{"arg__scale__direction": _choice("up")}),
             _iteration_result(0.99, "scale"),
@@ -221,7 +221,7 @@ async def test_goal_complete_at_threshold_boundary():
         """No-op."""
         return "x"
 
-    dm = MockDecisionModel([_iteration_result(0.5, "x")])
+    dm = MockSystemOneModel([_iteration_result(0.5, "x")])
     agent = _make_agent(dm, tools=["x"])
     response = await agent.call("done?")
     assert response.stop_reason == "finish"
@@ -234,8 +234,8 @@ async def test_loop_is_bounded_by_max_iterations():
         """Ping."""
         return "pong"
 
-    dm = MockDecisionModel([_iteration_result(0.0, "ping")] * 5)
-    register_provider("jev", DecisionProvider(dm))
+    dm = MockSystemOneModel([_iteration_result(0.0, "ping")] * 5)
+    register_provider("jev", SystemOneProvider(dm))
     agent = Agent(
         AgentConfig(name="t", model="m", provider="jev", tools=["ping"], max_iterations=3)
     )
@@ -249,7 +249,7 @@ async def test_unknown_tool_selection_raises_clear_error():
         """A real tool."""
         return "ok"
 
-    dm = MockDecisionModel([_iteration_result(0.1, "hallucinated_tool")])
+    dm = MockSystemOneModel([_iteration_result(0.1, "hallucinated_tool")])
     agent = _make_agent(dm, tools=["real_tool"])
     with pytest.raises(ValueError, match="unknown tool 'hallucinated_tool'"):
         await agent.call("go")
@@ -264,10 +264,10 @@ async def test_answer_format_runs_answer_selection_after_goal_complete():
         """Get the deployment status."""
         return "all green"
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.99, "get_status"),
-            DecisionResult(answers={"verdict": _choice("healthy")}),
+            SystemOneResult(answers={"verdict": _choice("healthy")}),
         ]
     )
     agent = _make_agent(dm, tools=["get_status"])
@@ -288,7 +288,7 @@ async def test_answer_format_runs_answer_selection_after_goal_complete():
 
 
 async def test_single_answer_mode_skips_goal_detection():
-    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("yes")})])
+    dm = MockSystemOneModel([SystemOneResult(answers={"v": _choice("yes")})])
     agent = _make_agent(dm)
     response = await agent.call(
         "quick?",
@@ -303,7 +303,7 @@ async def test_single_answer_mode_skips_goal_detection():
 
 
 async def test_no_tools_without_answer_format_raises_clear_error():
-    dm = MockDecisionModel()
+    dm = MockSystemOneModel()
     agent = _make_agent(dm)
     with pytest.raises(ValueError, match="answer_format"):
         await agent.call("nothing to decide")
@@ -325,7 +325,7 @@ async def test_free_form_required_parameter_is_rejected():
         """Search."""
         return query
 
-    dm = MockDecisionModel()
+    dm = MockSystemOneModel()
     agent = _make_agent(dm, tools=["search"])
     with pytest.raises(ValueError, match=r"'search'.*'query'.*free-form input"):
         await agent.call("find something")
@@ -338,7 +338,7 @@ async def test_optional_non_enum_parameter_is_omitted():
         """Ping."""
         return f"pong verbose={verbose}"
 
-    dm = MockDecisionModel([_iteration_result(0.9, "ping")])
+    dm = MockSystemOneModel([_iteration_result(0.9, "ping")])
     agent = _make_agent(dm, tools=["ping"])
     response = await agent.call("ping?")
     assert response.stop_reason == "finish"
@@ -348,8 +348,8 @@ async def test_optional_non_enum_parameter_is_omitted():
 
 
 async def test_agent_as_tool_returns_selected_answers_as_tool_result():
-    dm = MockDecisionModel([DecisionResult(answers={"verdict": _choice("billing")})])
-    register_provider("jev", DecisionProvider(dm))
+    dm = MockSystemOneModel([SystemOneResult(answers={"verdict": _choice("billing")})])
+    register_provider("jev", SystemOneProvider(dm))
     register_agent_preset("triage", model="jev-latest", provider="jev")
 
     tool = agent_as_tool(
@@ -391,14 +391,14 @@ async def test_turn_input_supplies_media_every_iteration():
         captures.append(len(messages))
         return [ImageBlock(data=b"png-bytes", mime_type="image/png")]
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.1, "click_button"),
             _iteration_result(0.99, "click_button"),
-            DecisionResult(answers={"done": _choice("yes")}),
+            SystemOneResult(answers={"done": _choice("yes")}),
         ]
     )
-    register_provider("jev", DecisionProvider(dm, turn_input=screenshot))
+    register_provider("jev", SystemOneProvider(dm, turn_input=screenshot))
     agent = Agent(AgentConfig(name="t", model="clef", provider="jev", tools=["click_button"]))
     response = await agent.call(
         "finish the task on screen",
@@ -419,8 +419,8 @@ async def test_turn_input_may_be_async_and_may_return_none():
     async def no_capture(messages: list) -> None:
         return None
 
-    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
-    register_provider("jev", DecisionProvider(dm, turn_input=no_capture))
+    dm = MockSystemOneModel([SystemOneResult(answers={"v": _choice("x")})])
+    register_provider("jev", SystemOneProvider(dm, turn_input=no_capture))
     agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
     response = await agent.call(
         "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
@@ -430,7 +430,7 @@ async def test_turn_input_may_be_async_and_may_return_none():
 
 
 async def test_without_turn_input_media_is_none():
-    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
+    dm = MockSystemOneModel([SystemOneResult(answers={"v": _choice("x")})])
     agent = _make_agent(dm)
     await agent.call(
         "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
@@ -449,8 +449,8 @@ async def test_turn_input_text_blocks_land_in_state_context():
     def observe(messages: list) -> list:
         return [TextBlock(text="window: Settings / dialog open")]
 
-    dm = MockDecisionModel([_iteration_result(0.9, "click_button")])
-    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    dm = MockSystemOneModel([_iteration_result(0.9, "click_button")])
+    register_provider("jev", SystemOneProvider(dm, turn_input=observe))
     agent = Agent(AgentConfig(name="t", model="clef", provider="jev", tools=["click_button"]))
     await agent.call("handle the dialog")
 
@@ -468,8 +468,8 @@ async def test_turn_input_routes_text_and_media_to_separate_channels():
             TextBlock(text="battery: 80%"),
         ]
 
-    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
-    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    dm = MockSystemOneModel([SystemOneResult(answers={"v": _choice("x")})])
+    register_provider("jev", SystemOneProvider(dm, turn_input=observe))
     agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
     await agent.call(
         "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
@@ -486,8 +486,8 @@ async def test_turn_input_rejects_document_blocks():
     def observe(messages: list) -> list:
         return [DocumentBlock(data=b"pdf", mime_type="application/pdf")]
 
-    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
-    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    dm = MockSystemOneModel([SystemOneResult(answers={"v": _choice("x")})])
+    register_provider("jev", SystemOneProvider(dm, turn_input=observe))
     agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
     with pytest.raises(ValueError, match="turn_input cannot return DocumentBlock"):
         await agent.call(
@@ -495,7 +495,7 @@ async def test_turn_input_rejects_document_blocks():
         )
 
 
-# --- bridge: decision hooks -----------------------------------------------------
+# --- bridge: System One hooks -----------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -507,8 +507,8 @@ def _clean_hooks():
     clear_hooks()
 
 
-async def test_after_llm_call_carries_each_turns_decision_result():
-    """The per-turn decision result needs no new hook: it rides AFTER_LLM_CALL
+async def test_after_llm_call_carries_each_turns_systemone_result():
+    """The per-turn System One result needs no new hook: it rides AFTER_LLM_CALL
     as response.raw, including the answer-phase result as response.answer."""
     from coreouto.hooks import AFTER_LLM_CALL, register_hook
 
@@ -520,11 +520,11 @@ async def test_after_llm_call_carries_each_turns_decision_result():
     seen = []
     register_hook(AFTER_LLM_CALL, lambda response, **kw: seen.append(response))
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.2, "ping"),
             _iteration_result(0.99, "ping"),
-            DecisionResult(answers={"v": _choice("x")}),
+            SystemOneResult(answers={"v": _choice("x")}),
         ]
     )
     agent = _make_agent(dm, tools=["ping"])
@@ -533,7 +533,7 @@ async def test_after_llm_call_carries_each_turns_decision_result():
     )
 
     assert len(seen) == 2
-    assert isinstance(seen[0].raw, DecisionResult)
+    assert isinstance(seen[0].raw, SystemOneResult)
     assert seen[0].raw.answers[GOAL_COMPLETE_KEY].noul == 0.2
     assert seen[1].answer.answers["v"].choice == "x"
     assert response.answer.answers["v"].choice == "x"
@@ -554,10 +554,10 @@ async def test_on_goal_complete_fires_before_answer_selection():
 
     register_hook(ON_GOAL_COMPLETE, on_goal_complete)
 
-    dm = MockDecisionModel(
+    dm = MockSystemOneModel(
         [
             _iteration_result(0.99, "ping"),
-            DecisionResult(answers={"v": _choice("x")}),
+            SystemOneResult(answers={"v": _choice("x")}),
         ]
     )
     agent = _make_agent(dm, tools=["ping"])
@@ -584,7 +584,7 @@ async def test_on_goal_complete_fires_without_answer_format():
     events = []
     register_hook(ON_GOAL_COMPLETE, lambda **kw: events.append(kw))
 
-    dm = MockDecisionModel([_iteration_result(0.99, "ping")])
+    dm = MockSystemOneModel([_iteration_result(0.99, "ping")])
     agent = _make_agent(dm, tools=["ping"])
     response = await agent.call("go")
 
@@ -616,8 +616,8 @@ async def test_before_turn_input_observes_and_on_turn_input_mutates():
             ImageBlock(data=b"png", mime_type="image/png"),
         ]
 
-    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
-    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    dm = MockSystemOneModel([SystemOneResult(answers={"v": _choice("x")})])
+    register_provider("jev", SystemOneProvider(dm, turn_input=observe))
     agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
     await agent.call(
         "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
@@ -629,8 +629,8 @@ async def test_before_turn_input_observes_and_on_turn_input_mutates():
     assert call["kwargs"]["media"] is None
 
 
-async def test_decision_collection_hook_collects_results():
-    from coreouto.contrib.hooks import decision_collection_hook
+async def test_systemone_collection_hook_collects_results():
+    from coreouto.contrib.hooks import systemone_collection_hook
     from coreouto.hooks import AFTER_LLM_CALL, register_hook
 
     @register_tool("ping")
@@ -638,10 +638,10 @@ async def test_decision_collection_hook_collects_results():
         """Ping."""
         return "pong"
 
-    hook, sink = decision_collection_hook()
+    hook, sink = systemone_collection_hook()
     register_hook(AFTER_LLM_CALL, hook)
 
-    dm = MockDecisionModel([_iteration_result(0.3, "ping"), _iteration_result(0.9, "ping")])
+    dm = MockSystemOneModel([_iteration_result(0.3, "ping"), _iteration_result(0.9, "ping")])
     agent = _make_agent(dm, tools=["ping"])
     await agent.call("go")
 
@@ -650,11 +650,11 @@ async def test_decision_collection_hook_collects_results():
     assert sink[1].answers[GOAL_COMPLETE_KEY].noul == 0.9
 
 
-async def test_decision_collection_hook_skips_chat_providers():
-    from coreouto.contrib.hooks import decision_collection_hook
+async def test_systemone_collection_hook_skips_chat_providers():
+    from coreouto.contrib.hooks import systemone_collection_hook
     from coreouto.hooks import AFTER_LLM_CALL, register_hook
 
-    hook, sink = decision_collection_hook()
+    hook, sink = systemone_collection_hook()
     register_hook(AFTER_LLM_CALL, hook)
 
     register_provider("mock", MockProvider([MockLLMResponse(content="hi")]))
@@ -667,7 +667,7 @@ async def test_decision_collection_hook_skips_chat_providers():
 async def test_typesafe_media_becomes_data_uri_extra_body():
     ts = pytest.importorskip("typesafe_sdk")
     from coreouto._types import AudioBlock, ImageBlock
-    from coreouto.decisions.typesafe import TypeSafeDecisionModel
+    from coreouto.systemone.typesafe import TypeSafeSystemOneModel
 
     class FakeClient:
         def __init__(self) -> None:
@@ -682,7 +682,7 @@ async def test_typesafe_media_becomes_data_uri_extra_body():
             )
 
     client = FakeClient()
-    dm = TypeSafeDecisionModel(client=client)
+    dm = TypeSafeSystemOneModel(client=client)
     await dm.decide(
         "state",
         questions={"n": NoulQuestion(instructions="?")},
@@ -702,9 +702,9 @@ async def test_typesafe_media_becomes_data_uri_extra_body():
 async def test_typesafe_media_rejects_remote_urls():
     pytest.importorskip("typesafe_sdk")
     from coreouto._types import ImageBlock
-    from coreouto.decisions.typesafe import TypeSafeDecisionModel
+    from coreouto.systemone.typesafe import TypeSafeSystemOneModel
 
-    dm = TypeSafeDecisionModel(client=object())
+    dm = TypeSafeSystemOneModel(client=object())
     with pytest.raises(ValueError, match="do not accept remote media URLs"):
         await dm.decide(
             "state",
@@ -717,9 +717,9 @@ async def test_typesafe_media_rejects_remote_urls():
 # --- typesafe implementation (SDK mapping, no real API calls) -----------------
 
 
-async def test_typesafe_decision_model_maps_questions_and_answers():
+async def test_typesafe_systemone_model_maps_questions_and_answers():
     ts = pytest.importorskip("typesafe_sdk")
-    from coreouto.decisions.typesafe import TypeSafeDecisionModel
+    from coreouto.systemone.typesafe import TypeSafeSystemOneModel
 
     class FakeClient:
         def __init__(self) -> None:
@@ -746,7 +746,7 @@ async def test_typesafe_decision_model_maps_questions_and_answers():
             )
 
     client = FakeClient()
-    dm = TypeSafeDecisionModel(client=client)
+    dm = TypeSafeSystemOneModel(client=client)
     result = await dm.decide(
         {"some": "state"},
         questions={
@@ -770,8 +770,8 @@ async def test_typesafe_decision_model_maps_questions_and_answers():
 
 
 def test_typesafe_import_error_without_sdk(monkeypatch):
-    import coreouto.decisions.typesafe as typesafe_module
+    import coreouto.systemone.typesafe as typesafe_module
 
     monkeypatch.setattr(typesafe_module, "AsyncTypeSafeClient", None)
     with pytest.raises(ImportError, match=r"coreouto\[typesafe\]"):
-        typesafe_module.TypeSafeDecisionModel()
+        typesafe_module.TypeSafeSystemOneModel()

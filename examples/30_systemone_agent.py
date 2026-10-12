@@ -1,15 +1,15 @@
-"""Example 30: A decision-driven agent (TypeSafe Jev).
+"""Example 30: A System One-driven agent (TypeSafe Jev).
 
-A DecisionProvider wraps a decision model in the Provider protocol, so the
+A SystemOneProvider wraps a System One model in the Provider protocol, so the
 agent loop runs on *selections* instead of generated text: each iteration the
 model decides whether the goal is complete and, if not, which tool to call
 next. Tools must be selectable — required parameters need an enum (a
 `Literal` type works). `answer_format` declares the typed questions the
-final answer must answer; its DecisionResult lands on `Response.answer`.
+final answer must answer; its SystemOneResult lands on `Response.answer`.
 
 Run with:
     export TYPESAFE_API_KEY=...
-    python examples/30_decision_agent.py
+    python examples/30_systemone_agent.py
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import os
 from typing import Literal
 
 import coreouto as co
-from coreouto.decisions.typesafe import register as register_typesafe
+from coreouto.systemone.typesafe import register as register_typesafe
 
 
 @co.register_tool("restart_service")
@@ -44,8 +44,8 @@ async def main() -> None:
     if not api_key:
         raise RuntimeError("TYPESAFE_API_KEY is required for this example")
 
-    register_typesafe(api_key=api_key)  # decision model "typesafe"
-    co.register_provider("jev", co.DecisionProvider("typesafe"))
+    register_typesafe(api_key=api_key)  # System One model "typesafe"
+    co.register_provider("jev", co.SystemOneProvider("typesafe"))
 
     preset = co.register_agent_preset(
         "incident",

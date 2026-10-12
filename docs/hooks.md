@@ -18,9 +18,9 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
 | `on_provider_error`| When a provider error matches an `error_handling` rule | `error`, `status_code`, `error_message`, `reaction`, `reaction_message`, `messages`, `model` |
 
-## Decision-provider events
+## System One provider events
 
-These three fire only for agents running on a `DecisionProvider` (see [Decision models](decisions.md)):
+These three fire only for agents running on a `SystemOneProvider` (see [System One models](systemone.md)):
 
 | Event               | When it fires                                             | Keyword arguments          |
 |---------------------|-----------------------------------------------------------|----------------------------|
@@ -29,8 +29,8 @@ These three fire only for agents running on a `DecisionProvider` (see [Decision 
 | `on_goal_complete`  | When the model declares the goal complete, before the answer-selection phase | `state`, `result`, `model` |
 
 - `on_turn_input` receives the **live** `blocks` list — hooks may mutate it in place (filter, replace, annotate) to modify what the model sees that turn, the same pattern `auto_summarize_hook` uses for `messages`.
-- `on_goal_complete` fires whether or not an `answer_format` was requested. `result` is the `DecisionResult` of the goal check.
-- Per-turn decision results need no dedicated event: they ride `after_llm_call` as `response.raw` (and the answer-phase result as `response.answer`). The `decision_collection_hook` recipe in `coreouto.contrib.hooks` collects them for you.
+- `on_goal_complete` fires whether or not an `answer_format` was requested. `result` is the `SystemOneResult` of the goal check.
+- Per-turn System One results need no dedicated event: they ride `after_llm_call` as `response.raw` (and the answer-phase result as `response.answer`). The `systemone_collection_hook` recipe in `coreouto.contrib.hooks` collects them for you.
 
 ### The on_finish event
 
