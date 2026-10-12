@@ -38,6 +38,7 @@ from coreouto.decisions.base import (
     Question,
     TurnBlock,
 )
+from coreouto.hooks import BEFORE_TURN_INPUT, ON_GOAL_COMPLETE, ON_TURN_INPUT, trigger
 from coreouto.tools import Tool
 
 # Called once per loop iteration with the current transcript; returns this
@@ -219,6 +220,7 @@ class DecisionProvider:
         result = await self._decide(state, questions, model, media, kwargs)
 
         if self._goal_complete(result):
+            await trigger(ON_GOAL_COMPLETE, state=state, result=result, model=model)
             if answer_format is not None:
                 final = await self._decide(state, answer_format, model, media, kwargs)
                 return LLMResponse(
@@ -251,11 +253,14 @@ class DecisionProvider:
     ) -> tuple[str | None, list[MediaBlock] | None]:
         if self._turn_input is None:
             return None, None
+        await trigger(BEFORE_TURN_INPUT, messages=messages)
         blocks = self._turn_input(messages)
         if inspect.isawaitable(blocks):
             blocks = await blocks
-        if not blocks:
-            return None, None
+        # ON_TURN_INPUT hooks receive the live list and may mutate it in
+        # place (filter, replace, annotate) before the blocks are routed.
+        blocks = list(blocks or [])
+        await trigger(ON_TURN_INPUT, blocks=blocks, messages=messages)
         text_parts: list[str] = []
         media: list[MediaBlock] = []
         for block in blocks:

@@ -18,6 +18,20 @@ Hooks let you inject behavior at specific points in the agent loop without modif
 | `on_user_injection`| When a user message is injected via `Agent.inject_user_message` | `message`, `messages` |
 | `on_provider_error`| When a provider error matches an `error_handling` rule | `error`, `status_code`, `error_message`, `reaction`, `reaction_message`, `messages`, `model` |
 
+## Decision-provider events
+
+These three fire only for agents running on a `DecisionProvider` (see [Decision models](decisions.md)):
+
+| Event               | When it fires                                             | Keyword arguments          |
+|---------------------|-----------------------------------------------------------|----------------------------|
+| `before_turn_input` | Before the `turn_input` callback is invoked each turn     | `messages`                 |
+| `on_turn_input`     | After `turn_input` returns, before the blocks are routed  | `blocks`, `messages`       |
+| `on_goal_complete`  | When the model declares the goal complete, before the answer-selection phase | `state`, `result`, `model` |
+
+- `on_turn_input` receives the **live** `blocks` list — hooks may mutate it in place (filter, replace, annotate) to modify what the model sees that turn, the same pattern `auto_summarize_hook` uses for `messages`.
+- `on_goal_complete` fires whether or not an `answer_format` was requested. `result` is the `DecisionResult` of the goal check.
+- Per-turn decision results need no dedicated event: they ride `after_llm_call` as `response.raw` (and the answer-phase result as `response.answer`). The `decision_collection_hook` recipe in `coreouto.contrib.hooks` collects them for you.
+
 ### The on_finish event
 
 Fires when the loop terminates, which happens when the model produces a response with text content and no tool calls (a clean termination — the assistant text is the final answer) or when an unrecoverable provider termination is reached (`max_tokens` / `length` / `refusal` / `content_filter` / `incomplete:content_filter` / `SAFETY` / `failed` / `cancelled`). The `content` kwarg is the final answer — the assistant text from the terminating response, or the response text as a fallback when the loop ended via a provider termination. See [Agent](agent.md#tracking-finish-events-with-hooks) for usage.

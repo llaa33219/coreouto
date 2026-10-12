@@ -16,6 +16,11 @@ ON_STREAM_TEXT = "on_stream_text"
 ON_STREAM_THINKING = "on_stream_thinking"
 ON_THINKING = "on_thinking"
 
+# Decision-provider events (coreouto.decisions.bridge.DecisionProvider).
+BEFORE_TURN_INPUT = "before_turn_input"
+ON_TURN_INPUT = "on_turn_input"
+ON_GOAL_COMPLETE = "on_goal_complete"
+
 _HOOKS: dict[str, list[Callable[..., Any]]] = {}
 
 

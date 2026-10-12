@@ -13,6 +13,7 @@ from collections.abc import Callable
 from typing import Any, Literal
 
 from coreouto._types import LLMResponse, Message, ToolResult, Usage
+from coreouto.decisions.base import DecisionResult
 from coreouto.hooks import (
     AFTER_LLM_CALL,
     AFTER_TOOL_CALL,
@@ -108,6 +109,26 @@ def stream_printer_hook(*, end: str = "", flush: bool = True) -> Callable[..., N
         print(text, end=end, flush=flush)
 
     return hook
+
+
+def decision_collection_hook(
+    *, sink: list[DecisionResult] | None = None
+) -> tuple[Callable[..., None], list[DecisionResult]]:
+    """Collect every DecisionResult from AFTER_LLM_CALL.
+
+    For agents running on a DecisionProvider: each iteration's outcome (the
+    goal-complete probability and tool selection) and the final answer-phase
+    result all arrive as response.raw. Responses without a DecisionResult
+    (chat providers) are skipped, so the hook is safe to register globally.
+    """
+    if sink is None:
+        sink = []
+
+    def hook(response: LLMResponse, **_kwargs: Any) -> None:
+        if isinstance(response.raw, DecisionResult):
+            sink.append(response.raw)
+
+    return hook, sink
 
 
 class ActivityState:
@@ -247,6 +268,7 @@ __all__ = [
     "activity_tracker_hook",
     "api_call_tracker_hook",
     "auto_summarize_hook",
+    "decision_collection_hook",
     "iteration_notification_hook",
     "loop_progress_hook",
     "stream_printer_hook",

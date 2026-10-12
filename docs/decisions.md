@@ -103,6 +103,16 @@ co.register_provider(
 
 Decision models that do not accept media simply never receive any — `media` is `None` unless `turn_input` is set.
 
+## Hooks
+
+Decision providers fire three extra events (see [Hooks](hooks.md#decision-provider-events)):
+
+- `before_turn_input` — observe before the `turn_input` callback runs each turn.
+- `on_turn_input` — inspect and **modify** the collected blocks in place before they are routed (drop a screenshot, redact a text field, ...).
+- `on_goal_complete` — intercept the moment the goal is declared complete, before the answer-selection phase runs.
+
+Per-turn decision results ride the existing `after_llm_call` event as `response.raw` (the answer-phase result as `response.answer`) — no separate event needed. `coreouto.contrib.hooks.decision_collection_hook` collects every `DecisionResult` into a list for you.
+
 ## Composing with LLM agents
 
 `agent_as_tool` accepts `answer_format`: the sub-agent runs on a decision provider, selects its final answer in the declared format, and the selections are returned to the parent as a JSON tool result.

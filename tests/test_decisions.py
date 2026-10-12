@@ -495,6 +495,175 @@ async def test_turn_input_rejects_document_blocks():
         )
 
 
+# --- bridge: decision hooks -----------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _clean_hooks():
+    from coreouto.hooks import clear_hooks
+
+    clear_hooks()
+    yield
+    clear_hooks()
+
+
+async def test_after_llm_call_carries_each_turns_decision_result():
+    """The per-turn decision result needs no new hook: it rides AFTER_LLM_CALL
+    as response.raw, including the answer-phase result as response.answer."""
+    from coreouto.hooks import AFTER_LLM_CALL, register_hook
+
+    @register_tool("ping")
+    def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    seen = []
+    register_hook(AFTER_LLM_CALL, lambda response, **kw: seen.append(response))
+
+    dm = MockDecisionModel(
+        [
+            _iteration_result(0.2, "ping"),
+            _iteration_result(0.99, "ping"),
+            DecisionResult(answers={"v": _choice("x")}),
+        ]
+    )
+    agent = _make_agent(dm, tools=["ping"])
+    response = await agent.call(
+        "go", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+    )
+
+    assert len(seen) == 2
+    assert isinstance(seen[0].raw, DecisionResult)
+    assert seen[0].raw.answers[GOAL_COMPLETE_KEY].noul == 0.2
+    assert seen[1].answer.answers["v"].choice == "x"
+    assert response.answer.answers["v"].choice == "x"
+
+
+async def test_on_goal_complete_fires_before_answer_selection():
+    from coreouto.hooks import ON_GOAL_COMPLETE, register_hook
+
+    @register_tool("ping")
+    def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    events = []
+
+    def on_goal_complete(state, result, model, **kw):
+        events.append((result, len(dm.calls)))
+
+    register_hook(ON_GOAL_COMPLETE, on_goal_complete)
+
+    dm = MockDecisionModel(
+        [
+            _iteration_result(0.99, "ping"),
+            DecisionResult(answers={"v": _choice("x")}),
+        ]
+    )
+    agent = _make_agent(dm, tools=["ping"])
+    await agent.call(
+        "go", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+    )
+
+    # the hook observed the goal-check result...
+    assert len(events) == 1
+    assert events[0][0].answers[GOAL_COMPLETE_KEY].noul == 0.99
+    # ...before the answer-selection decide() ran (only 1 call so far)
+    assert events[0][1] == 1
+    assert len(dm.calls) == 2
+
+
+async def test_on_goal_complete_fires_without_answer_format():
+    from coreouto.hooks import ON_GOAL_COMPLETE, register_hook
+
+    @register_tool("ping")
+    def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    events = []
+    register_hook(ON_GOAL_COMPLETE, lambda **kw: events.append(kw))
+
+    dm = MockDecisionModel([_iteration_result(0.99, "ping")])
+    agent = _make_agent(dm, tools=["ping"])
+    response = await agent.call("go")
+
+    assert len(events) == 1
+    assert events[0]["state"]["goal"]
+    assert response.answer is None
+
+
+async def test_before_turn_input_observes_and_on_turn_input_mutates():
+    from coreouto._types import ImageBlock, TextBlock
+    from coreouto.hooks import BEFORE_TURN_INPUT, ON_TURN_INPUT, register_hook
+
+    observed = []
+
+    def before(messages, **kw):
+        observed.append(len(messages))
+
+    def redact(blocks, **kw):
+        # in-place mutation: drop the screenshot, note the redaction
+        blocks.clear()
+        blocks.append(TextBlock(text="screenshot redacted"))
+
+    register_hook(BEFORE_TURN_INPUT, before)
+    register_hook(ON_TURN_INPUT, redact)
+
+    def observe(messages: list) -> list:
+        return [
+            TextBlock(text="window: Settings"),
+            ImageBlock(data=b"png", mime_type="image/png"),
+        ]
+
+    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
+    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
+    await agent.call(
+        "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+    )
+
+    assert observed == [2]  # system + user message were visible before the call
+    call = dm.calls[0]
+    assert call["state"]["context"] == "screenshot redacted"
+    assert call["kwargs"]["media"] is None
+
+
+async def test_decision_collection_hook_collects_results():
+    from coreouto.contrib.hooks import decision_collection_hook
+    from coreouto.hooks import AFTER_LLM_CALL, register_hook
+
+    @register_tool("ping")
+    def ping() -> str:
+        """Ping."""
+        return "pong"
+
+    hook, sink = decision_collection_hook()
+    register_hook(AFTER_LLM_CALL, hook)
+
+    dm = MockDecisionModel([_iteration_result(0.3, "ping"), _iteration_result(0.9, "ping")])
+    agent = _make_agent(dm, tools=["ping"])
+    await agent.call("go")
+
+    assert len(sink) == 2
+    assert sink[0].answers[GOAL_COMPLETE_KEY].noul == 0.3
+    assert sink[1].answers[GOAL_COMPLETE_KEY].noul == 0.9
+
+
+async def test_decision_collection_hook_skips_chat_providers():
+    from coreouto.contrib.hooks import decision_collection_hook
+    from coreouto.hooks import AFTER_LLM_CALL, register_hook
+
+    hook, sink = decision_collection_hook()
+    register_hook(AFTER_LLM_CALL, hook)
+
+    register_provider("mock", MockProvider([MockLLMResponse(content="hi")]))
+    agent = Agent(AgentConfig(name="t", model="m", provider="mock"))
+    await agent.call("hi")
+
+    assert sink == []
+
+
 async def test_typesafe_media_becomes_data_uri_extra_body():
     ts = pytest.importorskip("typesafe_sdk")
     from coreouto._types import AudioBlock, ImageBlock
