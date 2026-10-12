@@ -19,6 +19,7 @@ from coreouto.decisions.base import (
     Question,
     ScoreAnswer,
     ScoreQuestion,
+    TurnBlock,
 )
 
 __all__ = [
@@ -34,6 +35,7 @@ __all__ = [
     "Question",
     "ScoreAnswer",
     "ScoreQuestion",
+    "TurnBlock",
     "available_decision_models",
     "clear_decision_models",
     "get_decision_model",

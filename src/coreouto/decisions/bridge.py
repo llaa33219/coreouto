@@ -16,7 +16,16 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from coreouto._types import LLMResponse, Message, ToolCall, ToolResult
+from coreouto._types import (
+    AudioBlock,
+    ImageBlock,
+    LLMResponse,
+    Message,
+    TextBlock,
+    ToolCall,
+    ToolResult,
+    VideoBlock,
+)
 from coreouto.decisions import get_decision_model
 from coreouto.decisions.base import (
     AnswerFormat,
@@ -27,14 +36,16 @@ from coreouto.decisions.base import (
     NoulAnswer,
     NoulQuestion,
     Question,
+    TurnBlock,
 )
 from coreouto.tools import Tool
 
-# Called once per loop iteration with the current transcript; returns the
-# multimodal input for that turn (e.g. a fresh screenshot) or None.
+# Called once per loop iteration with the current transcript; returns this
+# turn's extra input — TextBlocks (merged into the state's "context") and/or
+# media blocks (sent as `media`, e.g. a fresh screenshot) — or None.
 TurnInput = Callable[
     [list[Message]],
-    list[MediaBlock] | Awaitable[list[MediaBlock] | None] | None,
+    list[TurnBlock] | Awaitable[list[TurnBlock] | None] | None,
 ]
 
 GOAL_COMPLETE_KEY = "goal_complete"
@@ -68,6 +79,8 @@ def _build_state(messages: list[Message], system_prompt: str | None) -> dict[str
     - history: one entry per prior step — user injections, tool selections
       with their arguments, and tool results.
     - current: the most recent tool results awaiting consideration.
+    - context: per-turn text from `turn_input`, when provided (added by
+      `create`, not here).
     """
     goal_parts: list[str] = []
     if system_prompt:
@@ -181,7 +194,9 @@ class DecisionProvider:
         tools = list(tools or [])
         _validate_tools(tools)
         state = _build_state(messages, system_prompt)
-        media = await self._collect_media(messages)
+        context, media = await self._collect_turn_input(messages)
+        if context is not None:
+            state["context"] = context
 
         if not tools:
             # Single-answer mode: no goal detection, answer immediately.
@@ -231,15 +246,30 @@ class DecisionProvider:
             raw=result,
         )
 
-    async def _collect_media(self, messages: list[Message]) -> list[MediaBlock] | None:
+    async def _collect_turn_input(
+        self, messages: list[Message]
+    ) -> tuple[str | None, list[MediaBlock] | None]:
         if self._turn_input is None:
-            return None
+            return None, None
         blocks = self._turn_input(messages)
         if inspect.isawaitable(blocks):
             blocks = await blocks
-        if blocks is None:
-            return None
-        return list(blocks)
+        if not blocks:
+            return None, None
+        text_parts: list[str] = []
+        media: list[MediaBlock] = []
+        for block in blocks:
+            if isinstance(block, TextBlock):
+                text_parts.append(block.text)
+            elif isinstance(block, (ImageBlock, AudioBlock, VideoBlock)):
+                media.append(block)
+            else:
+                raise ValueError(
+                    f"turn_input cannot return {type(block).__name__}: text info "
+                    "belongs in TextBlock (added to the state), media in "
+                    "ImageBlock/AudioBlock/VideoBlock (sent as media)."
+                )
+        return ("\n".join(text_parts) or None), (media or None)
 
     async def _decide(
         self,

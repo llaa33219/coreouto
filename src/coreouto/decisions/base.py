@@ -13,12 +13,17 @@ from typing import Annotated, Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from coreouto._types import AudioBlock, ImageBlock, Usage, VideoBlock
+from coreouto._types import AudioBlock, ImageBlock, TextBlock, Usage, VideoBlock
 
 # Multimodal input a decision model can score alongside the state (e.g.
 # screenshots of the current screen). TextBlock/DocumentBlock are excluded:
 # text belongs in `state`.
 MediaBlock = ImageBlock | AudioBlock | VideoBlock
+
+# What a turn_input callback may return per iteration. TextBlocks are merged
+# into the state (state["context"]); media blocks are passed as `media`.
+# DocumentBlock has no channel on these endpoints and is rejected.
+TurnBlock = TextBlock | ImageBlock | AudioBlock | VideoBlock
 
 
 class NoulQuestion(BaseModel):

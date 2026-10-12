@@ -438,6 +438,63 @@ async def test_without_turn_input_media_is_none():
     assert dm.calls[0]["kwargs"]["media"] is None
 
 
+async def test_turn_input_text_blocks_land_in_state_context():
+    from coreouto._types import TextBlock
+
+    @register_tool("click_button")
+    def click_button() -> str:
+        """Click the button."""
+        return "clicked"
+
+    def observe(messages: list) -> list:
+        return [TextBlock(text="window: Settings / dialog open")]
+
+    dm = MockDecisionModel([_iteration_result(0.9, "click_button")])
+    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    agent = Agent(AgentConfig(name="t", model="clef", provider="jev", tools=["click_button"]))
+    await agent.call("handle the dialog")
+
+    assert dm.calls[0]["state"]["context"] == "window: Settings / dialog open"
+    assert dm.calls[0]["kwargs"]["media"] is None
+
+
+async def test_turn_input_routes_text_and_media_to_separate_channels():
+    from coreouto._types import ImageBlock, TextBlock
+
+    def observe(messages: list) -> list:
+        return [
+            TextBlock(text="time: 12:00"),
+            ImageBlock(data=b"png", mime_type="image/png"),
+            TextBlock(text="battery: 80%"),
+        ]
+
+    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
+    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
+    await agent.call(
+        "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+    )
+
+    call = dm.calls[0]
+    assert call["state"]["context"] == "time: 12:00\nbattery: 80%"
+    assert len(call["kwargs"]["media"]) == 1
+
+
+async def test_turn_input_rejects_document_blocks():
+    from coreouto._types import DocumentBlock
+
+    def observe(messages: list) -> list:
+        return [DocumentBlock(data=b"pdf", mime_type="application/pdf")]
+
+    dm = MockDecisionModel([DecisionResult(answers={"v": _choice("x")})])
+    register_provider("jev", DecisionProvider(dm, turn_input=observe))
+    agent = Agent(AgentConfig(name="t", model="clef", provider="jev"))
+    with pytest.raises(ValueError, match="turn_input cannot return DocumentBlock"):
+        await agent.call(
+            "q", answer_format={"v": ChoiceQuestion(instructions="?", criteria={"x": "x"})}
+        )
+
+
 async def test_typesafe_media_becomes_data_uri_extra_body():
     ts = pytest.importorskip("typesafe_sdk")
     from coreouto._types import AudioBlock, ImageBlock

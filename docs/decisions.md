@@ -84,8 +84,11 @@ Parameters typed as `Literal[...]` map to `enum` automatically (see [Tools](tool
 Some decision models are multimodal — Cloudflare's Clef family is Jev/System One-API compatible and scores images (Clef-omni also audio and video) alongside the state. For agents that must *see* every turn (a UI on screen, a camera feed), pass `turn_input` to `DecisionProvider`:
 
 ```python
-def current_screen(messages: list[co.Message]) -> list[co.ImageBlock]:
-    return [co.ImageBlock(data=capture_png(), mime_type="image/png")]
+def current_screen(messages: list[co.Message]) -> list:
+    return [
+        co.TextBlock(text=f"active window: {active_window_title()}"),
+        co.ImageBlock(data=capture_png(), mime_type="image/png"),
+    ]
 
 co.register_provider(
     "clef",
@@ -94,9 +97,9 @@ co.register_provider(
 # AgentConfig(model="clef", provider="clef", ...)
 ```
 
-- The callback runs **every iteration**, including the answer-selection phase, and receives the current transcript. It may be sync or async and may return `None` for turns with nothing to show.
-- Blocks are the existing `ImageBlock` / `AudioBlock` / `VideoBlock` types. They are sent as base64 data URIs in the request body (`images` / `audio` / `videos` fields — the System One multimodal extension), not inside `state`.
-- Remote URLs are not accepted by these endpoints: URL-based blocks raise a clear `ValueError`. Pass raw bytes.
+- The callback runs **every iteration**, including the answer-selection phase, and receives the current transcript. It may be sync or async and may return `None` for turns with nothing to add.
+- Text info goes in `TextBlock`s — they are merged into the state as `state["context"]` for that turn. Media goes in `ImageBlock` / `AudioBlock` / `VideoBlock`s — sent as base64 data URIs in the request body (`images` / `audio` / `videos` fields — the System One multimodal extension), not inside `state`. A callback may return both.
+- Remote URLs are not accepted by these endpoints: URL-based blocks raise a clear `ValueError`. Pass raw bytes. `DocumentBlock` is rejected likewise — no channel carries it.
 
 Decision models that do not accept media simply never receive any — `media` is `None` unless `turn_input` is set.
 
